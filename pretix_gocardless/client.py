@@ -2,6 +2,7 @@
 from decimal import Decimal, InvalidOperation
 import re
 from urllib.parse import urlparse
+from urllib.parse import urlencode
 
 import requests
 
@@ -62,10 +63,41 @@ class Client:
         except (requests.RequestException, ValueError) as exc:
             raise GoCardlessError("GoCardless request failed") from exc
 
-    def create_mandate_request(self, creditor_id, key):
+    def create_mandate_request(self, creditor_id, key, customer_id=None):
         self._check_id(creditor_id, "CR")
         body = {"billing_requests": {"mandate_request": {"scheme": "sepa_core", "currency": "EUR"}, "links": {"creditor": creditor_id}}}
+        if customer_id:
+            self._check_id(customer_id, "CU")
+            body["billing_requests"]["links"]["customer"] = customer_id
         return self.request("POST", "/billing_requests", body, key)["billing_requests"]
+
+    def creditors(self):
+        """List every available creditor, without silently accepting partial pages."""
+        result, seen, cursor = [], set(), None
+        for _ in range(100):
+            path = "/creditors" + ("?" + urlencode({"after": cursor}) if cursor else "")
+            page = self.request("GET", path)
+            entries = page.get("creditors")
+            if not isinstance(entries, list):
+                raise GoCardlessError("Invalid creditor response")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise GoCardlessError("Invalid creditor response")
+                self._check_id(entry.get("id"), "CR")
+                if entry["id"] in seen:
+                    raise GoCardlessError("Duplicate creditor")
+                seen.add(entry["id"])
+                result.append((entry["id"], entry.get("name") or entry["id"]))
+            meta = page.get("meta") or {}
+            cursors = meta.get("cursors") or {} if isinstance(meta, dict) else {}
+            if not isinstance(cursors, dict):
+                raise GoCardlessError("Invalid creditor cursor")
+            cursor = cursors.get("after")
+            if not cursor:
+                return result
+            if not isinstance(cursor, str) or len(cursor) > 200:
+                raise GoCardlessError("Invalid creditor cursor")
+        raise GoCardlessError("Too many creditor pages")
 
     def create_debit_payment(self, mandate_id, amount, key):
         self._check_id(mandate_id, "MD")
@@ -119,3 +151,4 @@ class Client:
     def _check_id(object_id, prefix):
         if not isinstance(object_id, str) or not re.fullmatch(prefix + r"[A-Za-z0-9]+", object_id):
             raise GoCardlessError("Invalid GoCardless object identifier")
+

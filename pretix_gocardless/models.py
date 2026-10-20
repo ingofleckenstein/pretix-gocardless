@@ -4,6 +4,18 @@ import uuid
 from django.db import models
 
 
+class CustomerLink(models.Model):
+    id = models.AutoField(primary_key=True)
+    customer = models.ForeignKey("pretixbase.Customer", on_delete=models.CASCADE, related_name="gocardless_links")
+    environment = models.CharField(max_length=10, choices=(("sandbox", "Sandbox"), ("live", "Live")))
+    creditor_id = models.CharField(max_length=64)
+    remote_customer_id = models.CharField(max_length=64)
+
+    class Meta:
+        unique_together = (("customer", "environment", "creditor_id"),
+                           ("environment", "creditor_id", "remote_customer_id"))
+
+
 class PaymentReference(models.Model):
     id = models.AutoField(primary_key=True)
     payment = models.OneToOneField("pretixbase.OrderPayment", on_delete=models.PROTECT, related_name="gocardless_reference")
@@ -27,3 +39,4 @@ class ProcessedEvent(models.Model):
     event_id = models.CharField(max_length=64, unique=True)
     reference = models.ForeignKey(PaymentReference, on_delete=models.PROTECT, related_name="events")
     processed = models.DateTimeField(auto_now_add=True)
+

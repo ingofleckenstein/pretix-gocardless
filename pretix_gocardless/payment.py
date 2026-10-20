@@ -7,6 +7,7 @@ from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SecretKeySettingsField
 from pretix.base.payment import BasePaymentProvider, PaymentException
 from .configuration import credential
+from .creditors import creditor_field, resolve
 
 
 class GoCardlessProvider(BasePaymentProvider):
@@ -22,6 +23,8 @@ class GoCardlessProvider(BasePaymentProvider):
     @property
     def settings_form_fields(self):
         fields = OrderedDict(super().settings_form_fields)
+        sandbox_creditor = creditor_field(self.settings, "sandbox")
+        live_creditor = creditor_field(self.settings, "live")
         fields.update([
             ("environment", forms.ChoiceField(
                 label=_("GoCardless environment"),
@@ -48,7 +51,7 @@ class GoCardlessProvider(BasePaymentProvider):
                     _("GoCardless webhook setup instructions"),
                 ),
             )),
-            ("sandbox_creditor_id", forms.CharField(label=_("Sandbox creditor ID"), required=False)),
+            ("sandbox_creditor_display" if sandbox_creditor.disabled else "sandbox_creditor_id", sandbox_creditor),
             ("live_access_token", SecretKeySettingsField(
                 label=_("Live API access token (not yet enabled)"), required=False,
                 help_text=format_html(
@@ -67,7 +70,7 @@ class GoCardlessProvider(BasePaymentProvider):
                     _("GoCardless webhook setup instructions"),
                 ),
             )),
-            ("live_creditor_id", forms.CharField(label=_("Live creditor ID (not yet enabled)"), required=False)),
+            ("live_creditor_display" if live_creditor.disabled else "live_creditor_id", live_creditor),
             ("ticket_release", forms.ChoiceField(
                 label=_("Ticket release for direct debit"),
                 choices=(("confirmed", _("After GoCardless confirms payment")),
@@ -83,14 +86,14 @@ class GoCardlessProvider(BasePaymentProvider):
     def is_allowed(self, request, total=None):
         return (bool(self._logged_in_customer(request))
                 and self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
-                and all(credential(self.settings, "sandbox", k) for k in ("access_token", "creditor_id", "webhook_secret"))
+                and all(credential(self.settings, "sandbox", k) for k in ("access_token", "webhook_secret"))
                 and super().is_allowed(request, total))
 
     def order_change_allowed(self, order, request=None):
         customer = self._logged_in_customer(request)
         return (bool(customer) and order.customer_id == customer.pk
                 and self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
-                and all(credential(self.settings, "sandbox", k) for k in ("access_token", "creditor_id", "webhook_secret"))
+                and all(credential(self.settings, "sandbox", k) for k in ("access_token", "webhook_secret"))
                 and super().order_change_allowed(order, request))
 
     def payment_is_valid_session(self, request):
@@ -122,9 +125,10 @@ class GoCardlessProvider(BasePaymentProvider):
         })
         try:
             url = start_authorisation(payment, Client(credential(self.settings, "sandbox", "access_token"), "sandbox"),
-                                      "sandbox", credential(self.settings, "sandbox", "creditor_id"), return_url)
+                                      "sandbox", resolve(self.settings, "sandbox"), return_url)
         except (GoCardlessError, ValueError, KeyError) as exc:
             raise PaymentException(_("Unable to start the GoCardless sandbox payment.")) from exc
         payment.state = payment.PAYMENT_STATE_PENDING
         payment.save(update_fields=["state"])
         return url
+

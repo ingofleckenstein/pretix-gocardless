@@ -30,7 +30,7 @@ class TestPayment(models.Model):
 
     @property
     def order(self):
-        return SimpleNamespace(event=SimpleNamespace(currency="EUR"))
+        return SimpleNamespace(event=SimpleNamespace(currency="EUR"), customer_id=1)
 
     def confirm(self):
         self.state = "confirmed"
@@ -65,18 +65,34 @@ class TestEvent(models.Model):
         app_label = "reconcile_test"
 
 
+class TestCustomer(models.Model):
+    class Meta:
+        app_label = "reconcile_test"
+
+
+class TestCustomerLink(models.Model):
+    customer_id = models.IntegerField()
+    environment = models.CharField(max_length=10)
+    creditor_id = models.CharField(max_length=64)
+    remote_customer_id = models.CharField(max_length=64)
+
+    class Meta:
+        app_label = "reconcile_test"
+        unique_together = (("customer_id", "environment", "creditor_id"),)
+
+
 class DatabaseTests(TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         with connection.schema_editor() as schema:
-            for model in (TestPayment, TestReference, TestEvent):
+            for model in (TestPayment, TestReference, TestEvent, TestCustomer, TestCustomerLink):
                 schema.create_model(model)
 
     @classmethod
     def tearDownClass(cls):
         with connection.schema_editor() as schema:
-            for model in (TestEvent, TestReference, TestPayment):
+            for model in (TestCustomerLink, TestCustomer, TestEvent, TestReference, TestPayment):
                 schema.delete_model(model)
         super().tearDownClass()
 
@@ -84,13 +100,17 @@ class DatabaseTests(TestCase):
         TestEvent.objects.all().delete()
         TestReference.objects.all().delete()
         TestPayment.objects.all().delete()
+        TestCustomerLink.objects.all().delete()
+        TestCustomer.objects.all().delete()
+        TestCustomer.objects.create(pk=1)
         self.payment = TestPayment.objects.create(amount=Decimal("12.34"))
         self.ref = TestReference.objects.create(payment=self.payment, environment="sandbox", remote_payment_id="PM123")
         self.remote = {"id": "PM123", "amount": 1234, "currency": "EUR", "status": "confirmed"}
         local = ModuleType("pretix_gocardless.models")
-        local.PaymentReference, local.ProcessedEvent = TestReference, TestEvent
+        local.PaymentReference, local.ProcessedEvent, local.CustomerLink = TestReference, TestEvent, TestCustomerLink
         pretend = ModuleType("pretix.base.models")
         pretend.OrderPayment = TestPayment
+        pretend.Customer = TestCustomer
         self.modules = patch.dict("sys.modules", {"pretix_gocardless.models": local, "pretix.base.models": pretend})
         self.modules.start()
         self.addCleanup(self.modules.stop)
@@ -199,7 +219,7 @@ class DatabaseTests(TestCase):
         self.ref.save()
         client = Mock()
         client.create_mandate_request.return_value = {"id": "BRQ123"}
-        client.billing_request.return_value = {"id": "BRQ123", "status": "pending", "links": {"creditor": "CR123"},
+        client.billing_request.return_value = {"id": "BRQ123", "status": "pending", "links": {"creditor": "CR123", "customer": "CU123"},
             "mandate_request": {"scheme": "sepa_core", "currency": "EUR"}}
         target = "https://example.org/return"
         def flow(billing_id, return_url, key):
@@ -210,7 +230,22 @@ class DatabaseTests(TestCase):
         client.create_flow.side_effect = flow
         client.validate_flow_url.side_effect = lambda url: url
         self.assertEqual(start_authorisation(self.payment, client, "sandbox", "CR123", target), "https://pay-sandbox.gocardless.com/test")
+        self.assertEqual(TestCustomerLink.objects.get().remote_customer_id, "CU123")
+
+    def test_checkout_reuses_customer_and_rejects_mismatch(self):
+        self.ref.billing_request_id = ""
+        self.ref.remote_payment_id = None
+        self.ref.save()
+        TestCustomerLink.objects.create(customer_id=1, environment="sandbox", creditor_id="CR123", remote_customer_id="CU123")
+        client = Mock()
+        client.create_mandate_request.return_value = {"id": "BRQ123"}
+        client.billing_request.return_value = {"id": "BRQ123", "status": "pending", "links": {"creditor": "CR123", "customer": "CU999"},
+            "mandate_request": {"scheme": "sepa_core", "currency": "EUR"}}
+        with self.assertRaises(CheckoutMismatch):
+            start_authorisation(self.payment, client, "sandbox", "CR123", "https://example.org/return")
+        self.assertEqual(client.create_mandate_request.call_args.kwargs["customer_id"], "CU123")
 
     def test_checkout_rejects_changed_environment(self):
         with self.assertRaises(CheckoutMismatch):
             start_authorisation(self.payment, Mock(), "live", "CR123", "https://example.org/return")
+

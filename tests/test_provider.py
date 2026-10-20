@@ -42,10 +42,13 @@ class ProviderTests(TestCase):
         self.event = SimpleNamespace(currency="EUR", provider_settings={"environment": "sandbox", "sandbox_access_token": "token", "sandbox_creditor_id": "CR123", "sandbox_webhook_secret": "secret"})
         self.provider = self.provider_module.GoCardlessProvider(self.event)
         self.request = SimpleNamespace(customer=SimpleNamespace(pk=123))
+        available = patch("pretix_gocardless.creditors.available", return_value=[("CR123", "Test")])
+        available.start()
+        self.addCleanup(available.stop)
 
     def test_only_complete_sandbox_configuration_is_selectable(self):
         self.assertTrue(self.provider.is_allowed(self.request, 1))
-        for key, value in (("environment", "live"), ("sandbox_creditor_id", ""), ("sandbox_webhook_secret", "")):
+        for key, value in (("environment", "live"), ("sandbox_access_token", ""), ("sandbox_webhook_secret", "")):
             original = self.event.provider_settings[key]
             self.event.provider_settings[key] = value
             self.assertFalse(self.provider.is_allowed(self.request, 1))
@@ -88,3 +91,14 @@ class ProviderTests(TestCase):
         for env in ("sandbox", "live"):
             self.assertIn("https://docs.gocardless.com/docs/getting-started/stay-up-to-date-with-webhooks",
                           str(fields[f"{env}_webhook_secret"].help_text))
+
+    def test_single_uses_separate_readonly_display_and_multiple_use_selection(self):
+        fields = self.provider.settings_form_fields
+        self.assertEqual(fields["sandbox_creditor_display"].initial, "CR123")
+        self.assertTrue(fields["sandbox_creditor_display"].disabled)
+        self.assertNotIn("sandbox_creditor_id", fields)
+        with patch("pretix_gocardless.creditors.available", return_value=[("CR123", "A"), ("CR456", "B")]):
+            fields = self.provider.settings_form_fields
+            self.assertIsInstance(fields["sandbox_creditor_id"], forms.ChoiceField)
+            self.assertNotIn("sandbox_creditor_display", fields)
+

@@ -1,18 +1,17 @@
 # pretix-gocardless
 
 **Work in progress; experimental sandbox checkout only.** The provider can be
-selected with sandbox credentials in an EUR event. The complete flow has not
-been tested against GoCardless or pretix. It is not production-ready: do not
+selected with sandbox credentials in an EUR event. A hosted authorisation and
+simulated payment confirmation have been exercised in the GoCardless sandbox
+with a local pretix instance. It is not production-ready: do not
 install it on an operational pretix instance.
 
-The current code contains plugin discovery scaffolding, an initial API client,
-an experimental event-specific webhook endpoint and unit tests. Complete
-webhook processing, durable payment correlation, status reconciliation,
-chargebacks, refunds, configuration and full integration tests are incomplete.
-The database models and migrations are drafts only. The webhook endpoint retries
-unresolved billing requests, mandate events and chargebacks instead of marking
-them successful. It is not ready for use as a GoCardless webhook endpoint.
-The API client and endpoint have not been tested against the real sandbox.
+The current code contains an API client, an experimental event-specific webhook
+endpoint and unit tests. Some webhook cases, chargebacks, refunds, configuration
+and full integration tests remain incomplete. The database models and migrations
+are drafts. Unresolved webhook cases are retried rather than acknowledged as
+successful. A real GoCardless webhook delivery to this endpoint has not yet been
+tested; do not rely on it for operational use.
 
 The intended configuration offers either ticket release after a confirmed
 payment or early release while direct debit is pending. Early release is a
@@ -26,6 +25,17 @@ GoCardless direct debit is currently offered only to customers signed in to
 their pretix customer account. Guest checkout does not offer this provider.
 The hosted GoCardless mandate may be reusable even though this plugin creates
 only one payment per order; the plugin does not yet reuse mandates across orders.
+
+For signed-in customers, the plugin stores a GoCardless customer ID against
+the pretix customer, scoped by creditor and environment. Later checkouts reuse
+that customer ID; they still request a new mandate and do not automatically
+reuse a previous mandate. This has been tested with two incomplete sandbox
+billing requests; concurrency and completed repeat checkouts need further tests.
+
+The backend obtains creditors using the saved API token. A single creditor is
+shown read-only; when several are returned, the organiser chooses one. Save a
+new token and reopen the settings to load the creditors. The selection is
+checked against the account again before checkout.
 
 The backend contains separate Sandbox and Live credential fields and a
 Sandbox/Live selector. Sandbox uses `api-sandbox.gocardless.com` and Live
@@ -109,3 +119,4 @@ Documentation references:
 - https://docs.gocardless.com/docs/api-reference/webhooks
 - https://docs.gocardless.com/docs/api-reference/payment
 - https://docs.gocardless.com/docs/collect-payments/one-off-payments/one-off-direct-debit
+
