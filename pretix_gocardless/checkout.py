@@ -37,9 +37,11 @@ def ensure_billing_request(client, creditor_id, creation_key, known_id=None, cus
     return billing_id
 
 
-def ensure_hosted_flow(client, billing_id, creation_key, return_url):
+def ensure_hosted_flow(client, billing_id, creation_key, return_url, prefilled_customer=None):
     try:
-        flow = client.create_flow(billing_id, return_url, operation_key(creation_key, "hosted-flow"))
+        args = (billing_id, return_url, operation_key(creation_key, "hosted-flow"))
+        flow = (client.create_flow(*args, prefilled_customer=prefilled_customer) if prefilled_customer
+                else client.create_flow(*args))
     except IdempotencyConflict as exc:
         flow = client.flow(exc.resource_id)
     links = flow.get("links")
@@ -90,5 +92,6 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
         reference.billing_request_id = billing_id
         reference.save(update_fields=["billing_request_id"])
     # The billing ID and its key have been committed before starting the flow.
-    return ensure_hosted_flow(client, billing_id, reference.creation_key, return_url)
+    from .addresses import prefilled_address
+    return ensure_hosted_flow(client, billing_id, reference.creation_key, return_url, prefilled_address(payment.order))
 

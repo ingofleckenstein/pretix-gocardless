@@ -98,6 +98,14 @@ class ClientTests(unittest.TestCase):
         self.assertTrue(flow["auto_fulfil"])
         self.assertTrue(flow["lock_currency"])
 
+    def test_flow_prefills_address_without_locking_customer_details(self):
+        session = Session({"billing_request_flows": {"authorisation_url": "https://pay-sandbox.gocardless.com/flow"}})
+        address = {"address_line1": "Example 1", "country_code": "DE"}
+        Client("token", "sandbox", session).create_flow("BRQ1", "https://example.org/return", "key", address)
+        flow = session.calls[0][2]["json"]["billing_request_flows"]
+        self.assertEqual(flow["prefilled_customer"], address)
+        self.assertNotEqual(flow.get("lock_customer_details"), True)
+
     def test_invalid_flow_id_or_port_is_rejected(self):
         session = Session({"billing_request_flows": {"authorisation_url": "https://pay-sandbox.gocardless.com:444/flow"}})
         client = Client("token", "sandbox", session)
@@ -150,3 +158,4 @@ class ClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

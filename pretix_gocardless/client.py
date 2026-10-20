@@ -111,9 +111,11 @@ class Client:
         body = {"payments": {"amount": int(cents), "currency": "EUR", "links": {"mandate": mandate_id}}}
         return self.request("POST", "/payments", body, key)["payments"]
 
-    def create_flow(self, billing_id, return_url, key):
+    def create_flow(self, billing_id, return_url, key, prefilled_customer=None):
         self._check_id(billing_id, "BRQ")
         body = {"billing_request_flows": {"links": {"billing_request": billing_id}, "redirect_uri": return_url, "exit_uri": return_url, "auto_fulfil": True, "lock_currency": True}}
+        if prefilled_customer:
+            body["billing_request_flows"]["prefilled_customer"] = prefilled_customer
         flow = self.request("POST", "/billing_request_flows", body, key)["billing_request_flows"]
         self.validate_flow_url(flow.get("authorisation_url", ""))
         return flow

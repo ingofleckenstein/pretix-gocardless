@@ -31,6 +31,11 @@ that customer ID; they still request a new mandate and do not automatically
 reuse a previous mandate. This has been tested with two incomplete sandbox
 billing requests; concurrency and completed repeat checkouts need further tests.
 
+The hosted Sandbox flow receives the order's billing address as editable
+prefill. If the order has no billing address, the sole saved customer profile
+address is used; multiple saved addresses are never guessed. Missing fields
+are omitted, and the customer may edit the details at GoCardless.
+
 The backend obtains creditors using the saved API token. A single creditor is
 shown read-only; when several are returned, the organiser chooses one. Save a
 new token and reopen the settings to load the creditors. The selection is

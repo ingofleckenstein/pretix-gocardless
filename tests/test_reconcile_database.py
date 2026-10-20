@@ -30,7 +30,8 @@ class TestPayment(models.Model):
 
     @property
     def order(self):
-        return SimpleNamespace(event=SimpleNamespace(currency="EUR"), customer_id=1)
+        return SimpleNamespace(event=SimpleNamespace(currency="EUR"), customer_id=1,
+                               customer=SimpleNamespace(stored_addresses=SimpleNamespace(all=lambda: [])))
 
     def confirm(self):
         self.state = "confirmed"
