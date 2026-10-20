@@ -66,16 +66,15 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
         payment=payment, defaults={"environment": environment, "creditor_id": creditor_id},
     )
     with transaction.atomic():
-        if not payment.order.customer_id:
-            raise CheckoutMismatch("A logged-in customer is required")
-        Customer.objects.select_for_update().get(pk=payment.order.customer_id)
+        if payment.order.customer_id:
+            Customer.objects.select_for_update().get(pk=payment.order.customer_id)
         reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
         if reference.environment != environment or reference.creditor_id != creditor_id:
             raise CheckoutMismatch("Payment configuration changed")
         if reference.remote_payment_id:
             raise CheckoutMismatch("A debit is already associated with this payment")
-        customer_link = CustomerLink.objects.filter(customer_id=payment.order.customer_id,
-                                                    environment=environment, creditor_id=creditor_id).first()
+        customer_link = (CustomerLink.objects.filter(customer_id=payment.order.customer_id,
+                         environment=environment, creditor_id=creditor_id).first() if payment.order.customer_id else None)
         expected_customer = customer_link.remote_customer_id if customer_link else None
         billing_id = ensure_billing_request(client, creditor_id, reference.creation_key,
                                             reference.billing_request_id, expected_customer)
@@ -85,7 +84,7 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
             raise CheckoutMismatch("Billing request is missing its customer")
         if expected_customer and remote_customer != expected_customer:
             raise CheckoutMismatch("Billing request has the wrong customer")
-        if not customer_link:
+        if payment.order.customer_id and not customer_link:
             CustomerLink.objects.create(customer_id=payment.order.customer_id, environment=environment,
                                         creditor_id=creditor_id, remote_customer_id=remote_customer)
         reference.billing_request_id = billing_id

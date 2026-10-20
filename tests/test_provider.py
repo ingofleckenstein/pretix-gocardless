@@ -120,16 +120,21 @@ class ProviderTests(TestCase):
         with self.assertRaises(self.provider_module.PaymentException):
             self.provider.execute_payment(self.request, SimpleNamespace(order=order))
 
-    def test_guests_and_other_customers_cannot_start_or_select_payment(self):
+    def test_guests_can_pay_and_other_customers_cannot_start_account_order(self):
         guest = SimpleNamespace(customer=None)
-        self.assertFalse(self.provider.is_allowed(guest, 1))
-        self.assertFalse(self.provider.payment_is_valid_session(guest))
+        self.assertTrue(self.provider.is_allowed(guest, 1))
+        self.assertTrue(self.provider.payment_is_valid_session(guest))
+        self.assertTrue(self.provider.order_change_allowed(SimpleNamespace(customer_id=None), guest))
         self.assertFalse(self.provider.order_change_allowed(SimpleNamespace(customer_id=123), guest))
         self.assertFalse(self.provider.order_change_allowed(SimpleNamespace(customer_id=456), self.request))
         self.assertTrue(self.provider.order_change_allowed(SimpleNamespace(customer_id=123), self.request))
-        for request, owner in ((guest, None), (self.request, 456), (self.request, None)):
+        for request, owner in ((guest, 123), (self.request, 456)):
             with self.assertRaises(self.provider_module.PaymentException):
                 self.provider.execute_payment(request, SimpleNamespace(order=SimpleNamespace(customer_id=owner)))
+        order = SimpleNamespace(code="ABC12", customer_id=None, tagged_secret=Mock(return_value="secret"))
+        payment = SimpleNamespace(pk=42, order=order, state="created", PAYMENT_STATE_PENDING="pending", save=Mock())
+        with patch("pretix_gocardless.checkout.start_authorisation", return_value="https://pay-sandbox.gocardless.com/test"):
+            self.assertEqual(self.provider.execute_payment(guest, payment), "https://pay-sandbox.gocardless.com/test")
 
     def test_configuration_links_are_environment_specific(self):
         fields = self.provider.settings_form_fields

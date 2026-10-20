@@ -13,7 +13,7 @@ from .creditors import creditor_field, resolve
 class GoCardlessProvider(BasePaymentProvider):
     identifier = "gocardless"
     verbose_name = _("GoCardless (under development)")
-    public_name = _("SEPA direct debit")
+    public_name = _("SEPA direct debit (GoCardless)")
     test_mode_message = _("Sandbox test only: no real payment is made.")
 
     @staticmethod
@@ -105,26 +105,27 @@ class GoCardlessProvider(BasePaymentProvider):
         return fields
 
     def is_allowed(self, request, total=None):
-        return (bool(self._logged_in_customer(request))
-                and self.event.currency == "EUR" and self._environment() == "sandbox"
+        return (self.event.currency == "EUR" and self._environment() == "sandbox"
                 and self._sandbox_ready()
                 and super().is_allowed(request, total))
 
     def order_change_allowed(self, order, request=None):
         customer = self._logged_in_customer(request)
-        return (bool(customer) and order.customer_id == customer.pk
+        return ((order.customer_id is None or (customer and order.customer_id == customer.pk))
                 and self.event.currency == "EUR" and self._environment(order) == "sandbox"
                 and self._sandbox_ready(order)
                 and super().order_change_allowed(order, request))
 
     def payment_is_valid_session(self, request):
-        return bool(self._logged_in_customer(request)) and self._environment() == "sandbox" and self._sandbox_ready()
+        return self._environment() == "sandbox" and self._sandbox_ready()
 
     def checkout_prepare(self, request, cart):
         return self.payment_is_valid_session(request)
 
     def payment_prepare(self, request, payment):
-        return (bool(self._logged_in_customer(request)) and self._environment(payment.order) == "sandbox"
+        customer = self._logged_in_customer(request)
+        return ((payment.order.customer_id is None or (customer and payment.order.customer_id == customer.pk))
+                and self._environment(payment.order) == "sandbox"
                 and self._sandbox_ready(payment.order))
 
     def checkout_confirm_render(self, request, **kwargs):
@@ -137,7 +138,7 @@ class GoCardlessProvider(BasePaymentProvider):
         from .client import Client, GoCardlessError
 
         customer = self._logged_in_customer(request)
-        if not customer or payment.order.customer_id != customer.pk:
+        if payment.order.customer_id is not None and (not customer or payment.order.customer_id != customer.pk):
             raise PaymentException(_("Please sign in to the customer account associated with this order."))
         if (self._environment(payment.order) != "sandbox" or self.event.currency != "EUR"
                 or not self._sandbox_ready(payment.order)):

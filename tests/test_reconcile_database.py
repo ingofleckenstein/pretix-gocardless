@@ -3,7 +3,7 @@ from decimal import Decimal
 import uuid
 from types import ModuleType, SimpleNamespace
 from unittest import TestCase
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import django
 from django.conf import settings
@@ -244,6 +244,24 @@ class DatabaseTests(TestCase):
         with self.assertRaises(CheckoutMismatch):
             start_authorisation(self.payment, client, "sandbox", "CR123", "https://example.org/return")
         self.assertEqual(client.create_mandate_request.call_args.kwargs["customer_id"], "CU123")
+
+    def test_guest_checkout_does_not_create_customer_link(self):
+        self.ref.billing_request_id = ""
+        self.ref.remote_payment_id = None
+        self.ref.save()
+        client = Mock()
+        client.create_mandate_request.return_value = {"id": "BRQ123"}
+        client.billing_request.return_value = {"id": "BRQ123", "status": "pending", "links": {"creditor": "CR123", "customer": "CU123"},
+            "mandate_request": {"scheme": "sepa_core", "currency": "EUR"}}
+        target = "https://example.org/return"
+        client.create_flow.return_value = {"links": {"billing_request": "BRQ123"}, "redirect_uri": target,
+            "exit_uri": target, "auto_fulfil": True, "lock_currency": True,
+            "authorisation_url": "https://pay-sandbox.gocardless.com/test"}
+        client.validate_flow_url.side_effect = lambda url: url
+        with patch.object(TestPayment, "order", new_callable=PropertyMock, return_value=SimpleNamespace(customer_id=None)):
+            start_authorisation(self.payment, client, "sandbox", "CR123", target)
+        self.assertEqual(TestCustomerLink.objects.count(), 0)
+        self.assertNotIn("customer_id", client.create_mandate_request.call_args.kwargs)
 
     def test_checkout_rejects_changed_environment(self):
         with self.assertRaises(CheckoutMismatch):
