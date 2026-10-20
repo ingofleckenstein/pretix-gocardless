@@ -57,37 +57,64 @@ class WebhookDeliveryTests(TestCase):
         client = Mock()
         client.payment.return_value = {"id": "PM123"}
         client.mandate.return_value = {"id": "MD123", "scheme": "sepa_core", "status": "active", "links": {"creditor": "CR123"}}
-        provider = SimpleNamespace(settings={"environment": "sandbox", "access_token": "test-token"})
+        provider = SimpleNamespace(settings={"environment": "live", "sandbox_access_token": "test-token", "live_access_token": "other-token"})
         with patch.dict("sys.modules", {"pretix_gocardless.models": module}), \
-                patch("pretix_gocardless.client.Client", return_value=client), \
+                patch("pretix_gocardless.client.Client", return_value=client) as client_factory, \
                 patch("pretix_gocardless.reconcile.reconcile") as reconciler:
-            process_reference(ref, "test-event", provider)
+            process_reference(ref, "test-event", provider, "sandbox")
+            client_factory.assert_called_once_with("test-token", "sandbox")
             reconciler.assert_called_once_with(5, "EV123", "sandbox", {"id": "PM123"}, mandate_id="MD123", creditor_id="CR123")
             client.mandate.return_value["links"]["creditor"] = "CR999"
             reconciler.reset_mock()
             with self.assertRaises(ValueError):
-                process_reference(ref, "test-event", provider)
+                process_reference(ref, "test-event", provider, "sandbox")
             reconciler.assert_not_called()
 
-    def test_fulfilment_is_retried_until_checkout_is_implemented(self):
+    def test_sandbox_signature_is_not_accepted_for_live(self):
+        module = ModuleType("pretix_gocardless.payment")
+        module.GoCardlessProvider = Mock(return_value=SimpleNamespace(settings={
+            "sandbox_webhook_secret": "test-secret", "live_webhook_secret": "live-secret",
+        }))
+        body, signature = signed([])
+        factory = RequestFactory()
+        request = factory.post("/gocardless/webhook/live/", data=body,
+                               content_type="application/json", HTTP_WEBHOOK_SIGNATURE=signature)
+        request.event = object()
+        with patch.dict("sys.modules", {"pretix_gocardless.payment": module}):
+            self.assertEqual(webhook(request, "live").status_code, 498)
+            self.assertEqual(webhook(request, "sandbox").status_code, 204)
+
+    def test_billing_reference_is_scoped_to_the_event(self):
+        module = ModuleType("pretix_gocardless.models")
+        module.PaymentReference = SimpleNamespace(objects=Mock())
+        module.PaymentReference.objects.get.return_value = SimpleNamespace(pk=5, environment="sandbox")
+        provider = SimpleNamespace(settings={"environment": "sandbox", "sandbox_access_token": "test-token"})
+        with patch.dict("sys.modules", {"pretix_gocardless.models": module}), \
+                patch("pretix_gocardless.client.Client") as client, \
+                patch("pretix_gocardless.billing.process_billing", return_value="wait") as process:
+            self.assertEqual(process_reference(EventReference("EV123", "billing_requests", "BRQ123"), "event", provider, "sandbox"), "wait")
+            module.PaymentReference.objects.get.assert_called_once_with(billing_request_id="BRQ123", payment__order__event="event")
+            process.assert_called_once_with(5, "EV123", "sandbox", client.return_value)
+
+    def test_billing_execution_requires_sandbox(self):
         with self.assertRaises(RuntimeError):
-            process_reference(EventReference("EV123", "billing_requests", "BRQ123"), None, None)
+            process_reference(EventReference("EV123", "billing_requests", "BRQ123"), None, None, "live")
 
     def test_http_endpoint_rejects_invalid_signature_and_requires_post(self):
         module = ModuleType("pretix_gocardless.payment")
-        module.GoCardlessProvider = Mock(return_value=SimpleNamespace(settings={"webhook_secret": "test-secret"}))
+        module.GoCardlessProvider = Mock(return_value=SimpleNamespace(settings={"sandbox_webhook_secret": "test-secret"}))
         factory = RequestFactory()
         request = factory.post("/gocardless/webhook/", data=b'{"events":[]}', content_type="application/json", HTTP_WEBHOOK_SIGNATURE="bad")
         request.event = object()
         with patch.dict("sys.modules", {"pretix_gocardless.payment": module}):
-            self.assertEqual(webhook(request).status_code, 498)
-            self.assertEqual(webhook(factory.get("/gocardless/webhook/")).status_code, 405)
+            self.assertEqual(webhook(request, "sandbox").status_code, 498)
+            self.assertEqual(webhook(factory.get("/gocardless/webhook/"), "sandbox").status_code, 405)
 
     def test_http_endpoint_does_not_acknowledge_unhandled_mandate(self):
         module = ModuleType("pretix_gocardless.payment")
-        module.GoCardlessProvider = Mock(return_value=SimpleNamespace(settings={"webhook_secret": "test-secret"}))
+        module.GoCardlessProvider = Mock(return_value=SimpleNamespace(settings={"sandbox_webhook_secret": "test-secret"}))
         body, signature = signed([{"id": "EV123", "resource_type": "mandates", "links": {"mandate": "MD123"}}])
         request = RequestFactory().post("/gocardless/webhook/", data=body, content_type="application/json", HTTP_WEBHOOK_SIGNATURE=signature)
         request.event = object()
         with patch.dict("sys.modules", {"pretix_gocardless.payment": module}):
-            self.assertEqual(webhook(request).status_code, 503)
+            self.assertEqual(webhook(request, "sandbox").status_code, 503)

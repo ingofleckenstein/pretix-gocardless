@@ -17,6 +17,7 @@ class PaymentReference(models.Model):
     # The flow URL is intentionally not persisted: it contains an access token.
     last_status = models.CharField(max_length=40, blank=True)
     reversal_recorded = models.BooleanField(default=False)
+    released_pending_tickets = models.BooleanField(default=False)
     created = models.DateTimeField(auto_now_add=True)
 
 

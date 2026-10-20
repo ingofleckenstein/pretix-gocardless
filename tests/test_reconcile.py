@@ -16,7 +16,7 @@ class ReconcileTests(TestCase):
         )
         self.ref = SimpleNamespace(
             pk=1, payment_id=7, environment="sandbox", remote_payment_id="PM123",
-            reversal_recorded=False, save=MagicMock(),
+            reversal_recorded=False, released_pending_tickets=False, save=MagicMock(),
         )
         self.events = MagicMock()
         self.events.objects.filter.return_value.first.return_value = None

@@ -80,13 +80,27 @@ class Client:
         return self.request("POST", "/payments", body, key)["payments"]
 
     def create_flow(self, billing_id, return_url, key):
-        body = {"billing_request_flows": {"links": {"billing_request": billing_id}, "redirect_uri": return_url, "exit_uri": return_url}}
+        self._check_id(billing_id, "BRQ")
+        body = {"billing_request_flows": {"links": {"billing_request": billing_id}, "redirect_uri": return_url, "exit_uri": return_url, "auto_fulfil": True, "lock_currency": True}}
         flow = self.request("POST", "/billing_request_flows", body, key)["billing_request_flows"]
-        url = flow.get("authorisation_url", "")
+        self.validate_flow_url(flow.get("authorisation_url", ""))
+        return flow
+
+    def validate_flow_url(self, url):
         host = "pay-sandbox.gocardless.com" if self.environment == "sandbox" else "pay.gocardless.com"
         parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname != host or parsed.username or parsed.password:
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise GoCardlessError("Invalid hosted flow URL") from exc
+        if parsed.scheme != "https" or parsed.hostname != host or parsed.username or parsed.password or port not in (None, 443):
             raise GoCardlessError("Invalid hosted flow URL")
+        return url
+
+    def flow(self, object_id):
+        self._check_id(object_id, "BRF")
+        flow = self.request("GET", "/billing_request_flows/" + object_id)["billing_request_flows"]
+        self.validate_flow_url(flow.get("authorisation_url", ""))
         return flow
 
     def billing_request(self, object_id):

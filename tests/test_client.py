@@ -91,6 +91,22 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(GoCardlessError):
             Client("token", "sandbox", session).create_flow("BRQ1", "https://example.org/return", "key")
 
+    def test_hosted_flow_keeps_currency_locked_and_fulfils(self):
+        session = Session({"billing_request_flows": {"authorisation_url": "https://pay-sandbox.gocardless.com/billing/flow?id=example"}})
+        Client("token", "sandbox", session).create_flow("BRQ1", "https://example.org/return", "key")
+        flow = session.calls[0][2]["json"]["billing_request_flows"]
+        self.assertTrue(flow["auto_fulfil"])
+        self.assertTrue(flow["lock_currency"])
+
+    def test_invalid_flow_id_or_port_is_rejected(self):
+        session = Session({"billing_request_flows": {"authorisation_url": "https://pay-sandbox.gocardless.com:444/flow"}})
+        client = Client("token", "sandbox", session)
+        with self.assertRaises(GoCardlessError):
+            client.create_flow("BRQ1/unsafe", "https://example.org/return", "key")
+        self.assertEqual(session.calls, [])
+        with self.assertRaises(GoCardlessError):
+            client.create_flow("BRQ1", "https://example.org/return", "key")
+
     def test_rejects_incomplete_configuration(self):
         for token, env in (("", "sandbox"), ("x", "unknown")):
             with self.subTest(env=env), self.assertRaises(GoCardlessError):

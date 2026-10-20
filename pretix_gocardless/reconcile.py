@@ -1,4 +1,4 @@
-"""Experimental transactional reconciliation; not exposed to webhooks yet."""
+"""Experimental transactional payment reconciliation."""
 import re
 
 from django.db import transaction
@@ -53,6 +53,9 @@ def reconcile(reference_id, event_id, environment, remote, *, mandate_id=None, c
             payment.confirm()
         elif action is Decision.FAIL:
             payment.fail(log_data={"gocardless_status": status})
+            if reference.released_pending_tickets:
+                from .ticketing import revoke_pending
+                revoke_pending(reference, payment)
         reference.last_status = status
         reference.save(update_fields=["last_status"])
         ProcessedEvent.objects.create(event_id=event_id, reference=reference)
