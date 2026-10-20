@@ -26,6 +26,15 @@ class GoCardlessProvider(BasePaymentProvider):
             return "sandbox"
         return self.settings.get("environment")
 
+    def _sandbox_ready(self, order=None):
+        if not credential(self.settings, "sandbox", "access_token"):
+            return False
+        if credential(self.settings, "sandbox", "webhook_secret"):
+            return True
+        opted_in = self.settings.get("sandbox_without_webhook") in (True, "True", "true", "1", 1)
+        return bool(opted_in and getattr(self.event, "testmode", False)
+                    and (order is None or getattr(order, "testmode", False)))
+
     @property
     def settings_form_fields(self):
         fields = OrderedDict(super().settings_form_fields)
@@ -57,6 +66,11 @@ class GoCardlessProvider(BasePaymentProvider):
                     "https://docs.gocardless.com/docs/getting-started/stay-up-to-date-with-webhooks",
                     _("GoCardless webhook setup instructions"),
                 ),
+            )),
+            ("sandbox_without_webhook", forms.BooleanField(
+                label=_("Allow checkout tests without a webhook"), required=False, initial=False,
+                help_text=_("Development only: works only for test-mode events and test orders. "
+                            "Later payment updates are not received automatically."),
             )),
             ("sandbox_creditor_display" if sandbox_creditor.disabled else "sandbox_creditor_id", sandbox_creditor),
             ("live_access_token", SecretKeySettingsField(
@@ -93,24 +107,25 @@ class GoCardlessProvider(BasePaymentProvider):
     def is_allowed(self, request, total=None):
         return (bool(self._logged_in_customer(request))
                 and self.event.currency == "EUR" and self._environment() == "sandbox"
-                and all(credential(self.settings, "sandbox", k) for k in ("access_token", "webhook_secret"))
+                and self._sandbox_ready()
                 and super().is_allowed(request, total))
 
     def order_change_allowed(self, order, request=None):
         customer = self._logged_in_customer(request)
         return (bool(customer) and order.customer_id == customer.pk
                 and self.event.currency == "EUR" and self._environment(order) == "sandbox"
-                and all(credential(self.settings, "sandbox", k) for k in ("access_token", "webhook_secret"))
+                and self._sandbox_ready(order)
                 and super().order_change_allowed(order, request))
 
     def payment_is_valid_session(self, request):
-        return bool(self._logged_in_customer(request)) and self._environment() == "sandbox"
+        return bool(self._logged_in_customer(request)) and self._environment() == "sandbox" and self._sandbox_ready()
 
     def checkout_prepare(self, request, cart):
         return self.payment_is_valid_session(request)
 
     def payment_prepare(self, request, payment):
-        return bool(self._logged_in_customer(request)) and self._environment(payment.order) == "sandbox"
+        return (bool(self._logged_in_customer(request)) and self._environment(payment.order) == "sandbox"
+                and self._sandbox_ready(payment.order))
 
     def checkout_confirm_render(self, request, **kwargs):
         return _("After placing your order, you will be redirected to GoCardless to authorise a "
@@ -124,7 +139,8 @@ class GoCardlessProvider(BasePaymentProvider):
         customer = self._logged_in_customer(request)
         if not customer or payment.order.customer_id != customer.pk:
             raise PaymentException(_("Please sign in to the customer account associated with this order."))
-        if self._environment(payment.order) != "sandbox" or self.event.currency != "EUR":
+        if (self._environment(payment.order) != "sandbox" or self.event.currency != "EUR"
+                or not self._sandbox_ready(payment.order)):
             raise PaymentException(_("Only the GoCardless sandbox is supported in this development version."))
         return_url = eventreverse_absolute(self.event, "plugins:pretix_gocardless:return", kwargs={
             "order": payment.order.code, "payment": payment.pk,

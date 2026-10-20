@@ -44,6 +44,10 @@ experimental version; selecting Live does not enable live checkout.
 Pretix test-mode events and persisted test orders always use Sandbox, even if
 the selected environment is Live. This requires separate Sandbox credentials;
 the Live token is never used for such orders.
+An explicit development-only setting allows checkout experiments without a
+webhook secret, exclusively while the event and resulting order are in pretix
+test mode. Later payment status changes are not automatically received; this
+does not make the integration suitable for production.
 Use an event-specific endpoint ending in `gocardless/webhook/sandbox/` for
 Sandbox and `gocardless/webhook/live/` for Live. A GoCardless webhook cannot
 reach a URL that exists only on localhost; an externally reachable HTTPS URL

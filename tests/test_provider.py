@@ -94,6 +94,32 @@ class ProviderTests(TestCase):
         order.testmode = False
         self.assertEqual(self.provider._environment(order), "live")
 
+    def test_opt_in_without_webhook_only_allows_test_event_and_test_order(self):
+        self.event.provider_settings.update(sandbox_webhook_secret="", sandbox_without_webhook=True)
+        self.event.testmode = False
+        self.assertFalse(self.provider.is_allowed(self.request, 1))
+        self.event.testmode = True
+        self.assertTrue(self.provider.is_allowed(self.request, 1))
+        self.assertTrue(self.provider.payment_is_valid_session(self.request))
+        order = SimpleNamespace(customer_id=123, testmode=False)
+        self.assertFalse(self.provider.order_change_allowed(order, self.request))
+        self.assertFalse(self.provider.payment_prepare(self.request, SimpleNamespace(order=order)))
+        order.testmode = True
+        self.assertTrue(self.provider.order_change_allowed(order, self.request))
+        self.assertTrue(self.provider.payment_prepare(self.request, SimpleNamespace(order=order)))
+        self.event.provider_settings["sandbox_without_webhook"] = "False"
+        self.assertFalse(self.provider.is_allowed(self.request, 1))
+        self.event.provider_settings["sandbox_without_webhook"] = True
+        self.event.provider_settings["sandbox_access_token"] = ""
+        self.assertFalse(self.provider.is_allowed(self.request, 1))
+
+    def test_no_webhook_bypass_never_executes_a_non_test_order(self):
+        self.event.testmode = True
+        self.event.provider_settings.update(sandbox_webhook_secret="", sandbox_without_webhook=True)
+        order = SimpleNamespace(customer_id=123, testmode=False)
+        with self.assertRaises(self.provider_module.PaymentException):
+            self.provider.execute_payment(self.request, SimpleNamespace(order=order))
+
     def test_guests_and_other_customers_cannot_start_or_select_payment(self):
         guest = SimpleNamespace(customer=None)
         self.assertFalse(self.provider.is_allowed(guest, 1))
