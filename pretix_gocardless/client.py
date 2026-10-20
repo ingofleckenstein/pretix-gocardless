@@ -62,8 +62,9 @@ class Client:
         except (requests.RequestException, ValueError) as exc:
             raise GoCardlessError("GoCardless request failed") from exc
 
-    def create_mandate_request(self, key):
-        body = {"billing_requests": {"mandate_request": {"scheme": "sepa_core", "currency": "EUR"}}}
+    def create_mandate_request(self, creditor_id, key):
+        self._check_id(creditor_id, "CR")
+        body = {"billing_requests": {"mandate_request": {"scheme": "sepa_core", "currency": "EUR"}, "links": {"creditor": creditor_id}}}
         return self.request("POST", "/billing_requests", body, key)["billing_requests"]
 
     def create_debit_payment(self, mandate_id, amount, key):

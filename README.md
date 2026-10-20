@@ -5,12 +5,13 @@ snapshot. The pretix provider is deliberately not selectable and never starts
 a payment. Do not install it on an operational pretix instance.
 
 The current code contains plugin discovery scaffolding, an initial API client,
-raw-body webhook signature validation and unit tests. Webhook processing,
-durable payment correlation and deduplication, status reconciliation,
-chargebacks, refunds, configuration and full integration tests are not
-implemented. Database models and an initial migration are drafts only; no
-webhook uses them yet. The API client has not been tested against the real
-sandbox.
+an experimental event-specific webhook endpoint and unit tests. Complete
+webhook processing, durable payment correlation, status reconciliation,
+chargebacks, refunds, configuration and full integration tests are incomplete.
+The database models and migrations are drafts only. The webhook endpoint retries
+unresolved billing requests, mandate events and chargebacks instead of marking
+them successful. It is not ready for use as a GoCardless webhook endpoint.
+The API client and endpoint have not been tested against the real sandbox.
 
 The intended SEPA sequence is a hosted mandate request followed by a separate
 payment created against that mandate. A SEPA mandate is not automatically
@@ -55,7 +56,7 @@ source checkout, Dockerfile or version control. Once the integration is ready,
 follow the deployment's normal migration and restart procedure.
 
 `status.py` contains experimental decision logic for current remote statuses.
-`reconcile.py` is a draft transactional service, not connected to any endpoint:
+`reconcile.py` is a draft transactional service called by the experimental endpoint:
 it stores event IDs under a row lock and can call pretix confirmation/failure
 methods. It requires creditor-account binding and integration tests. It refuses
 to process chargebacks or ambiguous states pending a reviewed implementation.

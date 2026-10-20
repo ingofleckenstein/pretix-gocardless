@@ -29,11 +29,12 @@ class ClientTests(unittest.TestCase):
     def test_billing_request_is_eur_sepa_and_has_idempotency(self):
         session = Session({"billing_requests": {"id": "BRQ1"}})
         client = Client("token", "sandbox", session)
-        self.assertEqual(client.create_mandate_request("key"), {"id": "BRQ1"})
+        self.assertEqual(client.create_mandate_request("CR123", "key"), {"id": "BRQ1"})
         _, url, kwargs = session.calls[0]
         self.assertEqual(url, "https://api-sandbox.gocardless.com/billing_requests")
         self.assertNotIn("payment_request", kwargs["json"]["billing_requests"])
         self.assertEqual(kwargs["json"]["billing_requests"]["mandate_request"]["scheme"], "sepa_core")
+        self.assertEqual(kwargs["json"]["billing_requests"]["links"]["creditor"], "CR123")
         self.assertEqual(kwargs["headers"]["Idempotency-Key"], "key")
         self.assertFalse(kwargs["allow_redirects"])
         self.assertEqual(kwargs["timeout"], (5, 20))

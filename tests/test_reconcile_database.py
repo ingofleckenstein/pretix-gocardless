@@ -13,7 +13,7 @@ if not settings.configured:
 
 from django.db import connection, models  # noqa: E402
 
-from pretix_gocardless.reconcile import RequiresManualReview, reconcile  # noqa: E402
+from pretix_gocardless.reconcile import ReconciliationError, RequiresManualReview, reconcile  # noqa: E402
 
 
 class TestPayment(models.Model):
@@ -41,6 +41,8 @@ class TestReference(models.Model):
     payment = models.ForeignKey(TestPayment, on_delete=models.CASCADE)
     environment = models.CharField(max_length=10)
     remote_payment_id = models.CharField(max_length=40)
+    mandate_id = models.CharField(max_length=40, default="MD123")
+    creditor_id = models.CharField(max_length=40, default="CR123")
     last_status = models.CharField(max_length=40, default="")
     reversal_recorded = models.BooleanField(default=False)
 
@@ -108,3 +110,12 @@ class DatabaseTests(TestCase):
         with self.assertRaises(RequiresManualReview):
             reconcile(self.ref.pk, "EV123", "sandbox", self.remote)
         self.assertEqual(TestEvent.objects.count(), 0)
+
+    def test_account_binding_is_checked_under_lock(self):
+        self.remote["links"] = {"mandate": "MD123"}
+        with self.assertRaises(ReconciliationError):
+            reconcile(self.ref.pk, "EV123", "sandbox", self.remote, mandate_id="MD999", creditor_id="CR123")
+        self.payment.refresh_from_db()
+        self.assertEqual(self.payment.state, "pending")
+        self.assertEqual(TestEvent.objects.count(), 0)
+        self.assertEqual(reconcile(self.ref.pk, "EV123", "sandbox", self.remote, mandate_id="MD123", creditor_id="CR123"), "confirm")

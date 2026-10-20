@@ -1,7 +1,7 @@
 import unittest
 from decimal import Decimal
 
-from pretix_gocardless.validation import PaymentMismatch, validate_remote_payment, validate_recovered_payment, validate_mandate
+from pretix_gocardless.validation import PaymentMismatch, validate_remote_payment, validate_recovered_payment, validate_mandate, fulfilled_mandate_id
 
 
 class PaymentValidationTests(unittest.TestCase):
@@ -36,6 +36,13 @@ class PaymentValidationTests(unittest.TestCase):
         for change in ({"id": "MD999"}, {"scheme": "bacs"}, {"links": {"creditor": "CR999"}}, {"status": None}):
             with self.subTest(change=change), self.assertRaises(PaymentMismatch):
                 validate_mandate({**mandate, **change}, "MD123", "CR123")
+
+    def test_only_fulfilled_request_yields_correct_mandate(self):
+        request = {"id": "BRQ123", "status": "fulfilled", "links": {"creditor": "CR123"}, "mandate_request": {"scheme": "sepa_core", "currency": "EUR", "links": {"mandate": "MD123"}}}
+        self.assertEqual(fulfilled_mandate_id(request, "BRQ123", "CR123"), "MD123")
+        for change in ({"status": "pending"}, {"id": "BRQ999"}, {"links": {"creditor": "CR999"}}, {"mandate_request": {"scheme": "bacs"}}):
+            with self.subTest(change=change), self.assertRaises(PaymentMismatch):
+                fulfilled_mandate_id({**request, **change}, "BRQ123", "CR123")
 
 
 if __name__ == "__main__":

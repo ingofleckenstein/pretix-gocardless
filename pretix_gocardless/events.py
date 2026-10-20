@@ -27,12 +27,16 @@ def event_reference(event):
     if not isinstance(event_id, str) or not re.fullmatch(r"EV[A-Za-z0-9]+", event_id):
         raise InvalidEvent("Invalid event identifier")
     kind = event.get("resource_type")
-    if kind not in {"billing_requests", "payments"}:
+    if kind not in {"billing_requests", "payments", "mandates"}:
         return None
     links = event.get("links")
     if not isinstance(links, dict):
         raise InvalidEvent("Missing event links")
-    key, pattern = ("billing_request", r"BRQ[A-Za-z0-9]+") if kind == "billing_requests" else ("payment", r"PM[A-Za-z0-9]+")
+    key, pattern = {
+        "billing_requests": ("billing_request", r"BRQ[A-Za-z0-9]+"),
+        "payments": ("payment", r"PM[A-Za-z0-9]+"),
+        "mandates": ("mandate", r"MD[A-Za-z0-9]+"),
+    }[kind]
     object_id = links.get(key)
     if not isinstance(object_id, str) or not re.fullmatch(pattern, object_id):
         raise InvalidEvent("Invalid resource identifier")

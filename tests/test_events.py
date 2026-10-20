@@ -13,7 +13,11 @@ class EventReferenceTests(TestCase):
         self.assertEqual(event_reference(event), EventReference("EV12", "payments", "PM456"))
 
     def test_unrelated_event(self):
-        self.assertIsNone(event_reference({"id": "EV12", "resource_type": "mandates"}))
+        self.assertIsNone(event_reference({"id": "EV12", "resource_type": "customers"}))
+
+    def test_mandate_events_are_not_silently_ignored(self):
+        event = {"id": "EV12", "resource_type": "mandates", "links": {"mandate": "MD456"}}
+        self.assertEqual(event_reference(event), EventReference("EV12", "mandates", "MD456"))
 
     def test_bad_links_rejected(self):
         for links in (None, {}, {"billing_request": "BRQ1/../../x"}, {"billing_request": "BRQ1", "mandate_request_mandate": "MD1?x"}):

@@ -12,7 +12,7 @@ license = {text = "MIT"}
 classifiers = ["Development Status :: 2 - Pre-Alpha", "License :: OSI Approved :: MIT License"]
 
 [project.entry-points."pretix.plugin"]
-pretix_gocardless = "pretix_gocardless:PretixGoCardlessApp"
+pretix_gocardless = "pretix_gocardless"
 
 [tool.setuptools.packages.find]
 include = ["pretix_gocardless*"]
