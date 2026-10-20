@@ -20,6 +20,12 @@ class GoCardlessProvider(BasePaymentProvider):
     def _logged_in_customer(request):
         return getattr(request, "customer", None) if request is not None else None
 
+    def _environment(self, order=None):
+        # Check the persisted order as well: the event can change mode later.
+        if getattr(self.event, "testmode", False) or (order is not None and getattr(order, "testmode", False)):
+            return "sandbox"
+        return self.settings.get("environment")
+
     @property
     def settings_form_fields(self):
         fields = OrderedDict(super().settings_form_fields)
@@ -31,7 +37,8 @@ class GoCardlessProvider(BasePaymentProvider):
                 choices=(("sandbox", _("Sandbox")), ("live", _("Live"))),
                 initial="sandbox",
                 required=True,
-                help_text=_("Only Sandbox is currently supported. Do not use this development version for live payments."),
+                help_text=_("Test-mode events and test orders always use Sandbox, regardless of this selection. "
+                            "Only Sandbox is currently supported. Do not use this development version for live payments."),
             )),
             ("sandbox_access_token", SecretKeySettingsField(
                 label=_("Sandbox API access token"), required=False,
@@ -85,25 +92,25 @@ class GoCardlessProvider(BasePaymentProvider):
 
     def is_allowed(self, request, total=None):
         return (bool(self._logged_in_customer(request))
-                and self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
+                and self.event.currency == "EUR" and self._environment() == "sandbox"
                 and all(credential(self.settings, "sandbox", k) for k in ("access_token", "webhook_secret"))
                 and super().is_allowed(request, total))
 
     def order_change_allowed(self, order, request=None):
         customer = self._logged_in_customer(request)
         return (bool(customer) and order.customer_id == customer.pk
-                and self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
+                and self.event.currency == "EUR" and self._environment(order) == "sandbox"
                 and all(credential(self.settings, "sandbox", k) for k in ("access_token", "webhook_secret"))
                 and super().order_change_allowed(order, request))
 
     def payment_is_valid_session(self, request):
-        return bool(self._logged_in_customer(request)) and self.settings.get("environment") == "sandbox"
+        return bool(self._logged_in_customer(request)) and self._environment() == "sandbox"
 
     def checkout_prepare(self, request, cart):
         return self.payment_is_valid_session(request)
 
     def payment_prepare(self, request, payment):
-        return self.payment_is_valid_session(request)
+        return bool(self._logged_in_customer(request)) and self._environment(payment.order) == "sandbox"
 
     def checkout_confirm_render(self, request, **kwargs):
         return _("After placing your order, you will be redirected to GoCardless to authorise a "
@@ -117,7 +124,7 @@ class GoCardlessProvider(BasePaymentProvider):
         customer = self._logged_in_customer(request)
         if not customer or payment.order.customer_id != customer.pk:
             raise PaymentException(_("Please sign in to the customer account associated with this order."))
-        if self.settings.get("environment") != "sandbox" or self.event.currency != "EUR":
+        if self._environment(payment.order) != "sandbox" or self.event.currency != "EUR":
             raise PaymentException(_("Only the GoCardless sandbox is supported in this development version."))
         return_url = eventreverse_absolute(self.event, "plugins:pretix_gocardless:return", kwargs={
             "order": payment.order.code, "payment": payment.pk,

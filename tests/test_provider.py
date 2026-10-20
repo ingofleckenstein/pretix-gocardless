@@ -70,6 +70,30 @@ class ProviderTests(TestCase):
         with self.assertRaises(self.provider_module.PaymentException):
             self.provider.execute_payment(self.request, SimpleNamespace(order=SimpleNamespace(customer_id=123)))
 
+    def test_event_testmode_overrides_live_and_uses_sandbox_credentials(self):
+        self.event.testmode = True
+        self.event.provider_settings.update(environment="live", live_access_token="live-token")
+        order = SimpleNamespace(code="ABC12", customer_id=123, testmode=True, tagged_secret=Mock(return_value="secret"))
+        payment = SimpleNamespace(pk=42, order=order, state="created", PAYMENT_STATE_PENDING="pending", save=Mock())
+        self.assertTrue(self.provider.is_allowed(self.request, 1))
+        with patch("pretix_gocardless.checkout.start_authorisation", return_value="https://pay-sandbox.gocardless.com/test") as start:
+            self.provider.execute_payment(self.request, payment)
+        self.assertEqual(start.call_args.args[1].environment, "sandbox")
+        self.assertEqual(start.call_args.args[1].token, "token")
+        self.assertEqual(start.call_args.args[2], "sandbox")
+        self.event.provider_settings["sandbox_access_token"] = ""
+        self.assertFalse(self.provider.is_allowed(self.request, 1))
+
+    def test_old_test_order_stays_in_sandbox_after_event_changes_mode(self):
+        self.event.testmode = False
+        self.event.provider_settings["environment"] = "live"
+        order = SimpleNamespace(customer_id=123, testmode=True)
+        self.assertTrue(self.provider.order_change_allowed(order, self.request))
+        self.assertTrue(self.provider.payment_prepare(self.request, SimpleNamespace(order=order)))
+        self.assertEqual(self.provider._environment(order), "sandbox")
+        order.testmode = False
+        self.assertEqual(self.provider._environment(order), "live")
+
     def test_guests_and_other_customers_cannot_start_or_select_payment(self):
         guest = SimpleNamespace(customer=None)
         self.assertFalse(self.provider.is_allowed(guest, 1))

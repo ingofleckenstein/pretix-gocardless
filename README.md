@@ -41,6 +41,9 @@ The backend contains separate Sandbox and Live credential fields and a
 Sandbox/Live selector. Sandbox uses `api-sandbox.gocardless.com` and Live
 uses `api.gocardless.com`. Live processing is deliberately disabled in this
 experimental version; selecting Live does not enable live checkout.
+Pretix test-mode events and persisted test orders always use Sandbox, even if
+the selected environment is Live. This requires separate Sandbox credentials;
+the Live token is never used for such orders.
 Use an event-specific endpoint ending in `gocardless/webhook/sandbox/` for
 Sandbox and `gocardless/webhook/live/` for Live. A GoCardless webhook cannot
 reach a URL that exists only on localhost; an externally reachable HTTPS URL
