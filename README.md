@@ -22,6 +22,11 @@ it needs real pretix and sandbox integration testing. Issuing tickets early
 must not falsely record an uncollected payment as paid. Refunds are to be
 performed and confirmed manually; this plugin will not initiate refunds.
 
+GoCardless direct debit is currently offered only to customers signed in to
+their pretix customer account. Guest checkout does not offer this provider.
+The hosted GoCardless mandate may be reusable even though this plugin creates
+only one payment per order; the plugin does not yet reuse mandates across orders.
+
 The backend contains separate Sandbox and Live credential fields and a
 Sandbox/Live selector. Sandbox uses `api-sandbox.gocardless.com` and Live
 uses `api.gocardless.com`. Live processing is deliberately disabled in this

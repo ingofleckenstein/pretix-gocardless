@@ -15,6 +15,10 @@ class GoCardlessProvider(BasePaymentProvider):
     public_name = _("SEPA direct debit")
     test_mode_message = _("Sandbox test only: no real payment is made.")
 
+    @staticmethod
+    def _logged_in_customer(request):
+        return getattr(request, "customer", None) if request is not None else None
+
     @property
     def settings_form_fields(self):
         fields = OrderedDict(super().settings_form_fields)
@@ -77,17 +81,20 @@ class GoCardlessProvider(BasePaymentProvider):
         return fields
 
     def is_allowed(self, request, total=None):
-        return (self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
+        return (bool(self._logged_in_customer(request))
+                and self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
                 and all(credential(self.settings, "sandbox", k) for k in ("access_token", "creditor_id", "webhook_secret"))
                 and super().is_allowed(request, total))
 
     def order_change_allowed(self, order, request=None):
-        return (self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
+        customer = self._logged_in_customer(request)
+        return (bool(customer) and order.customer_id == customer.pk
+                and self.event.currency == "EUR" and self.settings.get("environment") == "sandbox"
                 and all(credential(self.settings, "sandbox", k) for k in ("access_token", "creditor_id", "webhook_secret"))
                 and super().order_change_allowed(order, request))
 
     def payment_is_valid_session(self, request):
-        return self.settings.get("environment") == "sandbox"
+        return bool(self._logged_in_customer(request)) and self.settings.get("environment") == "sandbox"
 
     def checkout_prepare(self, request, cart):
         return self.payment_is_valid_session(request)
@@ -96,14 +103,18 @@ class GoCardlessProvider(BasePaymentProvider):
         return self.payment_is_valid_session(request)
 
     def checkout_confirm_render(self, request, **kwargs):
-        return _("After placing your order, you will be redirected to GoCardless to authorise the direct debit.")
+        return _("After placing your order, you will be redirected to GoCardless to authorise a "
+                 "reusable SEPA direct debit mandate. This plugin creates one payment for this order.")
 
     def execute_payment(self, request, payment):
         from pretix.multidomain.urlreverse import eventreverse_absolute
         from .checkout import start_authorisation
         from .client import Client, GoCardlessError
 
-        if request is None or self.settings.get("environment") != "sandbox" or self.event.currency != "EUR":
+        customer = self._logged_in_customer(request)
+        if not customer or payment.order.customer_id != customer.pk:
+            raise PaymentException(_("Please sign in to the customer account associated with this order."))
+        if self.settings.get("environment") != "sandbox" or self.event.currency != "EUR":
             raise PaymentException(_("Only the GoCardless sandbox is supported in this development version."))
         return_url = eventreverse_absolute(self.event, "plugins:pretix_gocardless:return", kwargs={
             "order": payment.order.code, "payment": payment.pk,
