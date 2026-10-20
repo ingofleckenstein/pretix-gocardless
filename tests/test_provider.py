@@ -15,6 +15,8 @@ class ProviderTests(TestCase):
         payment_module = ModuleType("pretix.base.payment")
 
         class BaseProvider:
+            settings_form_fields = {}
+
             def __init__(self, event):
                 self.event = event
                 self.settings = event.provider_settings
@@ -63,3 +65,14 @@ class ProviderTests(TestCase):
         self.event.provider_settings["environment"] = "live"
         with self.assertRaises(self.provider_module.PaymentException):
             self.provider.execute_payment(object(), object())
+
+    def test_configuration_links_are_environment_specific(self):
+        fields = self.provider.settings_form_fields
+        sandbox = str(fields["sandbox_access_token"].help_text)
+        live = str(fields["live_access_token"].help_text)
+        self.assertIn('href="https://manage-sandbox.gocardless.com/developers/access-tokens"', sandbox)
+        self.assertIn('href="https://manage.gocardless.com/developers/access-tokens"', live)
+        self.assertIn("noopener noreferrer", sandbox)
+        for env in ("sandbox", "live"):
+            self.assertIn("https://docs.gocardless.com/docs/getting-started/stay-up-to-date-with-webhooks",
+                          str(fields[f"{env}_webhook_secret"].help_text))

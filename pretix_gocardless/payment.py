@@ -2,6 +2,7 @@
 from collections import OrderedDict
 
 from django import forms
+from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SecretKeySettingsField
 from pretix.base.payment import BasePaymentProvider, PaymentException
@@ -25,11 +26,43 @@ class GoCardlessProvider(BasePaymentProvider):
                 required=True,
                 help_text=_("Only Sandbox is currently supported. Do not use this development version for live payments."),
             )),
-            ("sandbox_access_token", SecretKeySettingsField(label=_("Sandbox API access token"), required=False)),
-            ("sandbox_webhook_secret", SecretKeySettingsField(label=_("Sandbox webhook endpoint secret"), required=False)),
+            ("sandbox_access_token", SecretKeySettingsField(
+                label=_("Sandbox API access token"), required=False,
+                help_text=format_html(
+                    '{} <a href="{}" target="_blank" rel="noopener noreferrer">{}</a>',
+                    _("Create a sandbox token with read and write access; GoCardless Components are not required."),
+                    "https://manage-sandbox.gocardless.com/developers/access-tokens",
+                    _("Open sandbox access tokens"),
+                ),
+            )),
+            ("sandbox_webhook_secret", SecretKeySettingsField(
+                label=_("Sandbox webhook endpoint secret"), required=False,
+                help_text=format_html(
+                    '{} <a href="{}" target="_blank" rel="noopener noreferrer">{}</a>',
+                    _("Create a sandbox webhook endpoint and copy its secret. It needs a publicly reachable HTTPS URL."),
+                    "https://docs.gocardless.com/docs/getting-started/stay-up-to-date-with-webhooks",
+                    _("GoCardless webhook setup instructions"),
+                ),
+            )),
             ("sandbox_creditor_id", forms.CharField(label=_("Sandbox creditor ID"), required=False)),
-            ("live_access_token", SecretKeySettingsField(label=_("Live API access token (not yet enabled)"), required=False)),
-            ("live_webhook_secret", SecretKeySettingsField(label=_("Live webhook endpoint secret (not yet enabled)"), required=False)),
+            ("live_access_token", SecretKeySettingsField(
+                label=_("Live API access token (not yet enabled)"), required=False,
+                help_text=format_html(
+                    '{} <a href="{}" target="_blank" rel="noopener noreferrer">{}</a>',
+                    _("Create a separate live token with read and write access; live checkout is not yet enabled."),
+                    "https://manage.gocardless.com/developers/access-tokens",
+                    _("Open live access tokens"),
+                ),
+            )),
+            ("live_webhook_secret", SecretKeySettingsField(
+                label=_("Live webhook endpoint secret (not yet enabled)"), required=False,
+                help_text=format_html(
+                    '{} <a href="{}" target="_blank" rel="noopener noreferrer">{}</a>',
+                    _("Create a separate live webhook endpoint and copy its secret."),
+                    "https://docs.gocardless.com/docs/getting-started/stay-up-to-date-with-webhooks",
+                    _("GoCardless webhook setup instructions"),
+                ),
+            )),
             ("live_creditor_id", forms.CharField(label=_("Live creditor ID (not yet enabled)"), required=False)),
             ("ticket_release", forms.ChoiceField(
                 label=_("Ticket release for direct debit"),
