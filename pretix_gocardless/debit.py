@@ -14,7 +14,7 @@ class MandateNotReady(Exception):
 
 
 def ensure_debit(client, *, billing_request_id, creditor_id, amount, creation_key,
-                 known_mandate_id=None, known_payment_id=None):
+                 known_mandate_id=None, known_payment_id=None, expected_customer_id=None):
     """Create or recover one debit after verifying the completed mandate.
 
     Never trusts the redirect or webhook body to establish a payment. All
@@ -22,6 +22,10 @@ def ensure_debit(client, *, billing_request_id, creditor_id, amount, creation_ke
     """
     billing = client.billing_request(billing_request_id)
     mandate_id = fulfilled_mandate_id(billing, billing_request_id, creditor_id)
+    if expected_customer_id is not None:
+        links = billing.get("links")
+        if not isinstance(links, dict) or links.get("customer") != expected_customer_id:
+            raise ValueError("Billing request customer mismatch")
     if known_mandate_id is not None and known_mandate_id != mandate_id:
         raise ValueError("Mandate changed for existing payment")
     mandate = client.mandate(mandate_id)

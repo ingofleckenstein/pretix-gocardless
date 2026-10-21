@@ -1,8 +1,9 @@
 from unittest import TestCase
 from unittest.mock import Mock
+from types import SimpleNamespace
 from uuid import uuid4
 
-from pretix_gocardless.checkout import CheckoutMismatch, ensure_billing_request, ensure_hosted_flow
+from pretix_gocardless.checkout import CheckoutMismatch, ensure_billing_request, ensure_hosted_flow, reusable_bank_account, verified_reusable_mandate
 from pretix_gocardless.client import IdempotencyConflict
 
 
@@ -52,3 +53,35 @@ class CheckoutTests(TestCase):
         self.flow["links"]["billing_request"] = "BRQ999"
         with self.assertRaises(CheckoutMismatch):
             ensure_hosted_flow(self.client, "BRQ123", self.key, self.url)
+
+    def test_existing_bank_account_is_attached_and_checked(self):
+        self.client.billing_request.return_value["links"].update(customer="CU123", customer_bank_account="BA123")
+        self.assertEqual(ensure_billing_request(self.client, "CR123", self.key, customer_id="CU123", bank_account_id="BA123"), "BRQ123")
+        self.assertEqual(self.client.create_mandate_request.call_args.kwargs, {"customer_id": "CU123", "bank_account_id": "BA123"})
+        self.client.billing_request.return_value["links"]["customer_bank_account"] = "BA999"
+        with self.assertRaises(CheckoutMismatch):
+            ensure_billing_request(self.client, "CR123", self.key, customer_id="CU123", bank_account_id="BA123")
+
+    def test_previous_account_must_be_enabled_and_belong_to_customer(self):
+        self.client.billing_request.return_value.update(status="fulfilled", links={"creditor": "CR123", "customer": "CU123", "customer_bank_account": "BA123"})
+        self.client.customer_bank_account.return_value = {"id": "BA123", "enabled": True, "currency": "EUR", "links": {"customer": "CU123"}}
+        self.assertEqual(reusable_bank_account(self.client, "BRQ123", "CR123", "CU123"), "BA123")
+        self.client.customer_bank_account.return_value["enabled"] = False
+        self.assertIsNone(reusable_bank_account(self.client, "BRQ123", "CR123", "CU123"))
+        self.client.customer_bank_account.return_value["links"]["customer"] = "CU999"
+        with self.assertRaises(CheckoutMismatch):
+            reusable_bank_account(self.client, "BRQ123", "CR123", "CU123")
+
+    def test_reusable_mandate_checks_customer_bank_creditor_and_status(self):
+        previous = SimpleNamespace(billing_request_id="BRQ123", mandate_id="MD123")
+        self.client.billing_request.return_value.update(
+            status="fulfilled", links={"creditor": "CR123", "customer": "CU123", "customer_bank_account": "BA123"},
+            mandate_request={"scheme": "sepa_core", "currency": "EUR", "links": {"mandate": "MD123"}})
+        self.client.customer_bank_account.return_value = {"id": "BA123", "enabled": True, "currency": "EUR", "links": {"customer": "CU123"}}
+        self.client.mandate.return_value = {"id": "MD123", "scheme": "sepa_core", "status": "active", "links": {"creditor": "CR123", "customer_bank_account": "BA123"}}
+        self.assertEqual(verified_reusable_mandate(self.client, previous, "CR123", "CU123"), "MD123")
+        self.client.mandate.return_value["status"] = "cancelled"
+        self.assertIsNone(verified_reusable_mandate(self.client, previous, "CR123", "CU123"))
+        self.client.billing_request.return_value["links"]["customer"] = "CU999"
+        with self.assertRaises(CheckoutMismatch):
+            verified_reusable_mandate(self.client, previous, "CR123", "CU123")

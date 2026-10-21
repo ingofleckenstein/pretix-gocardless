@@ -63,12 +63,17 @@ class Client:
         except (requests.RequestException, ValueError) as exc:
             raise GoCardlessError("GoCardless request failed") from exc
 
-    def create_mandate_request(self, creditor_id, key, customer_id=None):
+    def create_mandate_request(self, creditor_id, key, customer_id=None, bank_account_id=None):
         self._check_id(creditor_id, "CR")
         body = {"billing_requests": {"mandate_request": {"scheme": "sepa_core", "currency": "EUR"}, "links": {"creditor": creditor_id}}}
         if customer_id:
             self._check_id(customer_id, "CU")
             body["billing_requests"]["links"]["customer"] = customer_id
+        if bank_account_id:
+            if not customer_id:
+                raise GoCardlessError("A bank account requires a customer")
+            self._check_id(bank_account_id, "BA")
+            body["billing_requests"]["links"]["customer_bank_account"] = bank_account_id
         return self.request("POST", "/billing_requests", body, key)["billing_requests"]
 
     def creditors(self):
@@ -149,8 +154,11 @@ class Client:
         self._check_id(object_id, "MD")
         return self.request("GET", "/mandates/" + object_id)["mandates"]
 
+    def customer_bank_account(self, object_id):
+        self._check_id(object_id, "BA")
+        return self.request("GET", "/customer_bank_accounts/" + object_id)["customer_bank_accounts"]
+
     @staticmethod
     def _check_id(object_id, prefix):
         if not isinstance(object_id, str) or not re.fullmatch(prefix + r"[A-Za-z0-9]+", object_id):
             raise GoCardlessError("Invalid GoCardless object identifier")
-

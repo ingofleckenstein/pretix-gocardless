@@ -1,0 +1,3 @@
+{% load i18n %}{% blocktranslate trimmed %}
+Deine Tickets sind bereit. Die SEPA-Lastschrift wurde beantragt, aber noch nicht bestätigt. Falls der Einzug fehlschlägt, können die Tickets ungültig werden. Über den folgenden Link kannst du deine Bestellung prüfen.
+{% endblocktranslate %}

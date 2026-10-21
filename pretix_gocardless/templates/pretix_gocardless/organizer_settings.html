@@ -1,0 +1,16 @@
+{% extends "pretixcontrol/organizers/base.html" %}
+{% load i18n bootstrap3 %}
+{% block title %}{% translate "GoCardless webhook settings" %}{% endblock %}
+{% block content %}
+<h1>{% translate "GoCardless webhook settings" %}</h1>
+<p>{% translate "Development version: only sandbox payments are supported. Create a webhook endpoint in GoCardless and enter its secret below. Save an API token and reopen this page to load creditors." %}</p>
+{% for environment, url in webhook_urls %}
+<label for="url-{{ environment }}">{{ environment }} webhook URL</label>
+<input class="form-control" id="url-{{ environment }}" value="{{ url }}" readonly>
+{% endfor %}
+<form method="post">
+  {% csrf_token %}
+  {% bootstrap_form form %}
+  <button type="submit" class="btn btn-primary">{% translate "Save" %}</button>
+</form>
+{% endblock %}

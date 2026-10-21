@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pretix-gocardless"
-version = "0.1.0.dev0"
+version = "0.1.0.dev1"
 description = "Experimental GoCardless SEPA payment provider for pretix"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.31,<3"]
@@ -16,3 +16,6 @@ pretix_gocardless = "pretix_gocardless"
 
 [tool.setuptools.packages.find]
 include = ["pretix_gocardless*"]
+
+[tool.setuptools.package-data]
+pretix_gocardless = ["templates/**/*.html", "templates/**/*.txt"]

@@ -26,3 +26,22 @@ def prefilled_address(order):
         result["country_code"] = country
     return result
 
+
+def prefilled_customer(order):
+    """Use purchaser details, never an attendee's potentially different identity."""
+    result = prefilled_address(order)
+    email = getattr(order, "email", None)
+    if isinstance(email, str) and email.strip():
+        result["email"] = email.strip()
+
+    address = getattr(order, "invoice_address", None)
+    parts = getattr(address, "name_parts", None) if address is not None else None
+    # An explicitly selected billing name takes precedence over account data.
+    if not parts and getattr(order, "customer_id", None):
+        parts = getattr(order.customer, "name_parts", None)
+    if isinstance(parts, dict):
+        for field in ("given_name", "family_name"):
+            value = parts.get(field)
+            if isinstance(value, str) and value.strip():
+                result[field] = value.strip()
+    return result

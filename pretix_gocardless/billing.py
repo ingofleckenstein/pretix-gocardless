@@ -11,7 +11,7 @@ from .reconcile import ReconciliationError, reconcile
 
 
 def process_billing(reference_id, event_id, environment, client):
-    from .models import PaymentReference, ProcessedEvent
+    from .models import CustomerLink, PaymentReference, ProcessedEvent
     from pretix.base.models import OrderPayment
 
     if not isinstance(event_id, str) or not re.fullmatch(r"EV[A-Za-z0-9]+", event_id):
@@ -27,12 +27,27 @@ def process_billing(reference_id, event_id, environment, client):
             return "duplicate"
         payment = OrderPayment.objects.select_for_update().get(pk=ref.payment_id)
         if (payment.provider != "gocardless" or payment.order.event.currency != "EUR"
-                or (not ref.remote_payment_id and payment.state not in {"created", "pending"})):
+                or (not ref.remote_payment_id and (
+                    payment.state not in {"created", "pending"}
+                    or getattr(payment.order, "status", "n") != "n"))):
             raise ReconciliationError("Payment cannot be started in this state")
+        if not ref.remote_payment_id:
+            from .checkout import locked_checkout_payment
+            payment = locked_checkout_payment(payment)
+        expected_customer_id = None
+        if payment.order.customer_id:
+            customer_link = CustomerLink.objects.filter(
+                customer_id=payment.order.customer_id, environment=environment,
+                creditor_id=ref.creditor_id,
+            ).first()
+            if customer_link is None:
+                raise ReconciliationError("Customer binding is missing")
+            expected_customer_id = customer_link.remote_customer_id
         mandate_id, payment_id, _ = ensure_debit(
             client, billing_request_id=ref.billing_request_id, creditor_id=ref.creditor_id,
             amount=payment.amount, creation_key=ref.creation_key,
             known_mandate_id=ref.mandate_id, known_payment_id=ref.remote_payment_id,
+            expected_customer_id=expected_customer_id,
         )
         ref.mandate_id = mandate_id
         ref.remote_payment_id = payment_id

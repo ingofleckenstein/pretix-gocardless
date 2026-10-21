@@ -29,6 +29,9 @@ class PaymentReference(models.Model):
     # The flow URL is intentionally not persisted: it contains an access token.
     last_status = models.CharField(max_length=40, blank=True)
     reversal_recorded = models.BooleanField(default=False)
+    # A review flag is not an accounting reversal. Keep it until an operator
+    # explicitly resolves the incident, independently of later API snapshots.
+    manual_review_required = models.BooleanField(default=False)
     released_pending_tickets = models.BooleanField(default=False)
     created = models.DateTimeField(auto_now_add=True)
 
@@ -40,3 +43,11 @@ class ProcessedEvent(models.Model):
     reference = models.ForeignKey(PaymentReference, on_delete=models.PROTECT, related_name="events")
     processed = models.DateTimeField(auto_now_add=True)
 
+
+class ReminderDelivery(models.Model):
+    """Track each recipient independently; queued mail and markers commit together."""
+    id = models.AutoField(primary_key=True)
+    payment = models.OneToOneField("pretixbase.OrderPayment", on_delete=models.CASCADE,
+                                   related_name="gocardless_reminder")
+    customer_queued = models.DateTimeField(null=True, blank=True)
+    organizer_queued = models.DateTimeField(null=True, blank=True)

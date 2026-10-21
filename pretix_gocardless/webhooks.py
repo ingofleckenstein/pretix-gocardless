@@ -54,7 +54,7 @@ def process_reference(reference, event, provider, environment):
         if payment_reference.environment != environment:
             raise RuntimeError("Payment environment mismatch")
         result = process_billing(payment_reference.pk, reference.event_id, environment,
-                                 Client(credential(provider.settings, environment, "access_token"), environment))
+                                 Client(credential(getattr(provider, "account_settings", provider.settings), environment, "access_token"), environment))
         if provider.settings.get("ticket_release") == "pending":
             from .ticketing import release_pending
             release_pending(payment_reference.pk)
@@ -65,9 +65,15 @@ def process_reference(reference, event, provider, environment):
     if (environment != payment_reference.environment or not payment_reference.mandate_id
             or not payment_reference.creditor_id):
         raise RuntimeError("Payment context is incomplete")
-    client = Client(credential(provider.settings, environment, "access_token"), environment)
-    remote = client.payment(reference.resource_id)
+    client = Client(credential(getattr(provider, "account_settings", provider.settings), environment, "access_token"), environment)
     mandate = client.mandate(payment_reference.mandate_id)
     validate_mandate(mandate, payment_reference.mandate_id, payment_reference.creditor_id)
-    return reconcile(payment_reference.pk, reference.event_id, environment, remote,
-                     mandate_id=payment_reference.mandate_id, creditor_id=payment_reference.creditor_id)
+    result = reconcile(payment_reference.pk, reference.event_id, environment,
+                       lambda: client.payment(reference.resource_id),
+                       mandate_id=payment_reference.mandate_id, creditor_id=payment_reference.creditor_id)
+    # The initial billing webhook can see pending_customer_approval. A later
+    # payment event may be the first point at which release is permissible.
+    if provider.settings.get("ticket_release") == "pending":
+        from .ticketing import release_pending
+        release_pending(payment_reference.pk)
+    return result

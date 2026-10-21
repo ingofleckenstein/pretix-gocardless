@@ -9,7 +9,7 @@ class PretixGoCardlessApp(AppConfig):
     class PretixPluginMeta:
         name = "GoCardless (experimental)"
         author = "pretix-gocardless contributors"
-        version = "0.1.0.dev0"
+        version = "0.1.0.dev1"
         category = "PAYMENT"
         description = _("Experimental integration. Do not use for real payments.")
         compatibility = "pretix>=2026.8.0"
