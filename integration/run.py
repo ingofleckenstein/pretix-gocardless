@@ -5,6 +5,7 @@ run `python integration/run.py`. A fresh local PostgreSQL cluster is created
 and stopped on exit. Never reads an existing pretix config or database.
 """
 import configparser
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
@@ -17,15 +18,39 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 
-def main():
-    import pgserver
+@contextmanager
+def disposable_database(root):
+    """Own a fresh cluster, or a fresh DB on an explicitly supplied test server."""
+    import psycopg
+    from psycopg import sql
     from psycopg.conninfo import conninfo_to_dict
+    dsn = os.environ.get("GC_TEST_POSTGRES_DSN")
+    if dsn:
+        # Never reuse or migrate a database supplied by the caller. Only the
+        # newly created random database is modified, then dropped on exit.
+        database = "gocardless_test_" + uuid4().hex
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database)))
+            try:
+                params = conninfo_to_dict(dsn)
+                params["dbname"] = database
+                yield params
+            finally:
+                admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(database)))
+    else:
+        import pgserver
+        pg = pgserver.get_server(root / "postgres", cleanup_mode="stop")
+        try:
+            yield conninfo_to_dict(pg.get_uri())
+        finally:
+            pg.cleanup()
+
+
+def main():
 
     with tempfile.TemporaryDirectory(prefix="gocardless-integration-") as temporary:
         root = Path(temporary)
-        pg = pgserver.get_server(root / "postgres", cleanup_mode="stop")
-        try:
-            params = conninfo_to_dict(pg.get_uri())
+        with disposable_database(root) as params:
             config = configparser.ConfigParser()
             config["pretix"] = {"url": "http://localhost:8351", "datadir": str(root / "data")}
             config["django"] = {"secret": "disposable-integration-tests-only", "debug": "true"}
@@ -34,6 +59,8 @@ def main():
                 "user": params["user"], "host": params["host"],
                 "port": params.get("port", "5432"),
             }
+            if params.get("password"):
+                config["database"]["password"] = params["password"]
             config["mail"] = {"backend": "console", "from": "test@example.invalid"}
             config_path = root / "pretix.cfg"
             with config_path.open("w") as output:
@@ -59,8 +86,6 @@ def main():
             connection.close()
             if not result.wasSuccessful():
                 raise SystemExit(1)
-        finally:
-            pg.cleanup()
 
 
 class IntegrationChecks(unittest.TestCase):

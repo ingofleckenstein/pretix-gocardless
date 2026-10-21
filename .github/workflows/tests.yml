@@ -19,6 +19,20 @@ jobs:
       - run: python -m unittest discover -s tests -v
   pretix-postgresql:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: integration-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      GC_TEST_POSTGRES_DSN: postgresql://postgres:integration-test-only@127.0.0.1:5432/postgres
     strategy:
       matrix:
         python-version: ['3.12', '3.13']
@@ -27,5 +41,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install 'pretix==2026.8.0' 'Django==5.2.17' 'psycopg[binary]' pgserver .
+      - run: python -m pip install 'pretix==2026.8.0' 'Django==5.2.17' 'psycopg[binary]' .
       - run: python integration/run.py
