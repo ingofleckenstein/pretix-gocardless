@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from unittest import TestCase
 from unittest.mock import Mock
 from types import SimpleNamespace
@@ -19,7 +20,8 @@ class CheckoutTests(TestCase):
         self.url = "https://example.org/return"
         self.flow = {"id": "BRF123", "links": {"billing_request": "BRQ123"},
                      "redirect_uri": self.url, "exit_uri": self.url, "auto_fulfil": True,
-                     "lock_currency": True, "authorisation_url": "https://pay-sandbox.gocardless.com/flow"}
+                     "lock_currency": True, "authorisation_url": "https://pay-sandbox.gocardless.com/flow",
+                     "expires_at": "2099-01-01T00:00:00Z"}
         self.client.create_flow.return_value = self.flow
         self.client.validate_flow_url.side_effect = lambda value: value
 
@@ -46,11 +48,35 @@ class CheckoutTests(TestCase):
     def test_flow_conflict_fetches_and_validates_original_flow(self):
         self.client.create_flow.side_effect = IdempotencyConflict("BRF123")
         self.client.flow.return_value = self.flow
-        self.assertEqual(ensure_hosted_flow(self.client, "BRQ123", self.key, self.url), self.flow["authorisation_url"])
+        hosted = ensure_hosted_flow(self.client, "BRQ123", self.key, self.url)
+        self.assertEqual((hosted.id, hosted.url), ("BRF123", self.flow["authorisation_url"]))
         self.client.flow.assert_called_once_with("BRF123")
+
+    def test_known_unexpired_flow_is_fetched_without_creating_another(self):
+        self.client.flow.return_value = self.flow
+        hosted = ensure_hosted_flow(self.client, "BRQ123", self.key, self.url, known_id="BRF123")
+        self.assertFalse(hosted.expired(datetime(2098, 1, 1, tzinfo=timezone.utc)))
+        self.client.flow.assert_called_once_with("BRF123")
+        self.client.create_flow.assert_not_called()
+
+    def test_expired_flow_is_detected(self):
+        self.flow["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        self.client.flow.return_value = self.flow
+        hosted = ensure_hosted_flow(self.client, "BRQ123", self.key, self.url, known_id="BRF123")
+        self.assertTrue(hosted.expired())
 
     def test_flow_from_other_billing_request_is_rejected(self):
         self.flow["links"]["billing_request"] = "BRQ999"
+        with self.assertRaises(CheckoutMismatch):
+            ensure_hosted_flow(self.client, "BRQ123", self.key, self.url)
+
+    def test_flow_requires_matching_id_and_expiry(self):
+        self.flow["id"] = "BRF999"
+        self.client.flow.return_value = self.flow
+        with self.assertRaises(CheckoutMismatch):
+            ensure_hosted_flow(self.client, "BRQ123", self.key, self.url, known_id="BRF123")
+        self.flow["id"] = "BRF123"
+        self.flow.pop("expires_at")
         with self.assertRaises(CheckoutMismatch):
             ensure_hosted_flow(self.client, "BRQ123", self.key, self.url)
 

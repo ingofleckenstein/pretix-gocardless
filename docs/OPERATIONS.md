@@ -31,12 +31,19 @@ whose stored status is adverse while the pretix payment is confirmed. It does
 not create refunds or reopen paid orders. It cannot reconstruct incident data
 that was already overwritten before this migration.
 
+Migration 0007 stores Billing Request Flow IDs and a renewal generation. It
+does not store authorisation URLs. New interrupted checkouts reuse the same
+unexpired flow; expired flows are renewed with a generation-specific
+idempotency key. A flow created before migration 0007 has no recoverable local
+identifier, so its first continuation after the update may create one new flow.
+
 ## Rollback
 
-Retain the database backup and prior image together. Do not reverse 0006 during
-normal rollback: that discards incident flags. The previous application can run
-with an unused extra database column, but it will not preserve the new review
-semantics. Suspend this provider until forward recovery is verified. Restoring
+Retain the database backup and prior image together. Do not reverse migrations
+0006 or 0007 during normal rollback: that discards incident flags or stored
+flow references. The previous application can run with unused extra database
+columns, but it will not preserve the new review or flow-reuse semantics.
+Suspend this provider until forward recovery is verified. Restoring
 a database backup can lose references to debits created after the backup;
 reconcile these with GoCardless before resuming collections. Never create new
 debits merely to repair missing references.

@@ -24,9 +24,12 @@ class PaymentReference(models.Model):
     environment = models.CharField(max_length=10, choices=(("sandbox", "Sandbox"), ("live", "Live")))
     creditor_id = models.CharField(max_length=64, null=True, blank=True)
     billing_request_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
+    # Persist only the flow identifier. The authorisation URL contains an
+    # access token and must never be stored in the database.
+    billing_request_flow_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
+    billing_request_flow_generation = models.PositiveIntegerField(default=0)
     mandate_id = models.CharField(max_length=64, null=True, blank=True)
     remote_payment_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
-    # The flow URL is intentionally not persisted: it contains an access token.
     last_status = models.CharField(max_length=40, blank=True)
     reversal_recorded = models.BooleanField(default=False)
     # A review flag is not an accounting reversal. Keep it until an operator

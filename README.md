@@ -138,6 +138,13 @@ replace the recorded adverse status. No accounting reversal is implied. Resolve
 the financial and ticket consequences before an operator explicitly clears the
 flag; there is deliberately no automatic reset.
 
+Migration 0007 persists the Billing Request Flow identifier, without storing
+its token-bearing authorisation URL. Retrying an interrupted checkout fetches
+and validates that same flow while it is unexpired. An expired flow advances a
+stored generation and receives a new purpose-separated idempotency key, so
+concurrent retries converge on one replacement. Flows created by older plugin
+versions cannot be recovered because their identifiers were never stored.
+
 The unit suite covers mocked reconciliation and SQLite transactions using small
 test models. `integration/run.py` additionally checks real pretix 2026.8 models
 on a disposable PostgreSQL cluster, including simultaneous event replay. It

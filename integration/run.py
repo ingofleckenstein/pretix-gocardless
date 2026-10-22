@@ -258,9 +258,10 @@ class IntegrationChecks(unittest.TestCase):
         client.create_mandate_request.return_value = {"id": billing_id}
         client.billing_request.return_value = billing
         return_url = "http://localhost:8351/return"
-        client.create_flow.return_value = {"links": {"billing_request": billing_id}, "redirect_uri": return_url,
+        client.create_flow.return_value = {"id": "BRF" + uuid4().hex, "links": {"billing_request": billing_id}, "redirect_uri": return_url,
             "exit_uri": return_url, "auto_fulfil": True, "lock_currency": True,
-            "authorisation_url": "https://pay-sandbox.gocardless.com/synthetic"}
+            "authorisation_url": "https://pay-sandbox.gocardless.com/synthetic",
+            "expires_at": "2099-01-01T00:00:00Z"}
         client.validate_flow_url.side_effect = lambda url: url
         self.assertEqual(start_authorisation(self.payment, client, "sandbox", "CR123", return_url),
                          "https://pay-sandbox.gocardless.com/synthetic")
@@ -287,6 +288,7 @@ class IntegrationChecks(unittest.TestCase):
         OrderPayment.objects.filter(pk=self.payment.pk).update(state="confirmed")
         MigrationExecutor(connection).migrate([("pretix_gocardless", "0005_reminderdelivery")])
         MigrationExecutor(connection).migrate([("pretix_gocardless", "0006_paymentreference_manual_review_required")])
+        MigrationExecutor(connection).migrate([("pretix_gocardless", "0007_paymentreference_billing_request_flow")])
         self.ref.refresh_from_db()
         self.assertTrue(self.ref.manual_review_required)
 

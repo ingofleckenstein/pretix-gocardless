@@ -4,6 +4,8 @@ The caller must durably persist the creation UUID before any remote request
 and save the returned billing request ID before starting the flow. This module
 never creates a debit or marks an order paid.
 """
+from dataclasses import dataclass
+from datetime import datetime, timezone as datetime_timezone
 import re
 
 from .client import IdempotencyConflict
@@ -12,6 +14,17 @@ from .idempotency import operation_key
 
 class CheckoutMismatch(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class HostedFlow:
+    id: str
+    url: str
+    expires_at: datetime
+
+    def expired(self, current_time=None):
+        current_time = current_time or datetime.now(datetime_timezone.utc)
+        return self.expires_at <= current_time
 
 
 def locked_checkout_payment(payment):
@@ -161,19 +174,32 @@ def start_reused_mandate(payment, client, environment, creditor_id):
     return True
 
 
-def ensure_hosted_flow(client, billing_id, creation_key, return_url, prefilled_customer=None):
-    try:
-        args = (billing_id, return_url, operation_key(creation_key, "hosted-flow"))
-        flow = (client.create_flow(*args, prefilled_customer=prefilled_customer) if prefilled_customer
-                else client.create_flow(*args))
-    except IdempotencyConflict as exc:
-        flow = client.flow(exc.resource_id)
+def ensure_hosted_flow(client, billing_id, creation_key, return_url, prefilled_customer=None,
+                       known_id=None, generation=0):
+    if known_id:
+        flow = client.flow(known_id)
+    else:
+        try:
+            args = (billing_id, return_url, operation_key(creation_key, "hosted-flow", generation))
+            flow = (client.create_flow(*args, prefilled_customer=prefilled_customer) if prefilled_customer
+                    else client.create_flow(*args))
+        except IdempotencyConflict as exc:
+            flow = client.flow(exc.resource_id)
     links = flow.get("links")
-    if (not isinstance(links, dict) or links.get("billing_request") != billing_id
+    flow_id = flow.get("id")
+    expires_at = flow.get("expires_at")
+    try:
+        parsed_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        parsed_expiry = None
+    if (not isinstance(flow_id, str) or not re.fullmatch(r"BRF[A-Za-z0-9]+", flow_id)
+            or (known_id and flow_id != known_id)
+            or not isinstance(links, dict) or links.get("billing_request") != billing_id
             or flow.get("redirect_uri") != return_url or flow.get("exit_uri") != return_url
-            or flow.get("auto_fulfil") is not True or flow.get("lock_currency") is not True):
+            or flow.get("auto_fulfil") is not True or flow.get("lock_currency") is not True
+            or parsed_expiry is None or parsed_expiry.tzinfo is None):
         raise CheckoutMismatch("Hosted flow does not match the original intent")
-    return client.validate_flow_url(flow.get("authorisation_url", ""))
+    return HostedFlow(flow_id, client.validate_flow_url(flow.get("authorisation_url", "")), parsed_expiry)
 
 
 def start_authorisation(payment, client, environment, creditor_id, return_url):
@@ -222,5 +248,45 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
         reference.billing_request_id = billing_id
         reference.save(update_fields=["billing_request_id"])
     # The billing ID and its key have been committed before starting the flow.
+    # Reuse a stored, unexpired flow. Expired flows receive a new generation so
+    # the API idempotency key intentionally creates one replacement resource.
     from .addresses import prefilled_customer
-    return ensure_hosted_flow(client, billing_id, reference.creation_key, return_url, prefilled_customer(payment.order))
+    customer_data = prefilled_customer(payment.order)
+    while True:
+        with transaction.atomic():
+            reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
+            payment = locked_checkout_payment(payment)
+            if reference.billing_request_id != billing_id:
+                raise CheckoutMismatch("Billing request changed")
+            known_flow_id = reference.billing_request_flow_id
+            generation = reference.billing_request_flow_generation
+
+        hosted = ensure_hosted_flow(
+            client, billing_id, reference.creation_key, return_url, customer_data,
+            known_id=known_flow_id, generation=generation,
+        )
+        if hosted.expired():
+            with transaction.atomic():
+                reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
+                locked_checkout_payment(payment)
+                if reference.billing_request_flow_id == hosted.id:
+                    reference.billing_request_flow_id = None
+                    reference.billing_request_flow_generation += 1
+                    reference.save(update_fields=["billing_request_flow_id", "billing_request_flow_generation"])
+                elif reference.billing_request_flow_id is None and not known_flow_id:
+                    raise CheckoutMismatch("GoCardless returned an expired hosted flow")
+            continue
+
+        with transaction.atomic():
+            reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
+            locked_checkout_payment(payment)
+            if reference.billing_request_id != billing_id:
+                raise CheckoutMismatch("Billing request changed")
+            if (reference.billing_request_flow_id is None
+                    and reference.billing_request_flow_generation == generation):
+                reference.billing_request_flow_id = hosted.id
+                reference.save(update_fields=["billing_request_flow_id"])
+            if reference.billing_request_flow_id == hosted.id:
+                return hosted.url
+            # A concurrent request stored the authoritative flow. Fetch and
+            # validate that resource on the next iteration.

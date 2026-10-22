@@ -53,6 +53,8 @@ class TestReference(models.Model):
     mandate_id = models.CharField(max_length=40, null=True, default="MD123")
     creditor_id = models.CharField(max_length=40, default="CR123")
     billing_request_id = models.CharField(max_length=40, null=True, default="BRQ123")
+    billing_request_flow_id = models.CharField(max_length=64, null=True, default=None)
+    billing_request_flow_generation = models.PositiveIntegerField(default=0)
     creation_key = models.UUIDField(default=uuid.uuid4)
     last_status = models.CharField(max_length=40, default="")
     reversal_recorded = models.BooleanField(default=False)
@@ -392,12 +394,53 @@ class DatabaseTests(TestCase):
         def flow(billing_id, return_url, key):
             self.ref.refresh_from_db()
             self.assertEqual(self.ref.billing_request_id, "BRQ123")
-            return {"links": {"billing_request": billing_id}, "redirect_uri": target, "exit_uri": target,
-                    "auto_fulfil": True, "lock_currency": True, "authorisation_url": "https://pay-sandbox.gocardless.com/test"}
+            return {"id": "BRF123", "links": {"billing_request": billing_id}, "redirect_uri": target,
+                    "exit_uri": target, "auto_fulfil": True, "lock_currency": True,
+                    "authorisation_url": "https://pay-sandbox.gocardless.com/test",
+                    "expires_at": "2099-01-01T00:00:00Z"}
         client.create_flow.side_effect = flow
         client.validate_flow_url.side_effect = lambda url: url
         self.assertEqual(start_authorisation(self.payment, client, "sandbox", "CR123", target), "https://pay-sandbox.gocardless.com/test")
         self.assertEqual(TestCustomerLink.objects.get().remote_customer_id, "CU123")
+        self.ref.refresh_from_db()
+        self.assertEqual(self.ref.billing_request_flow_id, "BRF123")
+
+        client.flow.return_value = client.create_flow.return_value = flow("BRQ123", target, "unused")
+        self.assertEqual(start_authorisation(self.payment, client, "sandbox", "CR123", target),
+                         "https://pay-sandbox.gocardless.com/test")
+        client.flow.assert_called_once_with("BRF123")
+        client.create_flow.assert_called_once()
+
+    def test_checkout_renews_one_expired_stored_flow(self):
+        from pretix_gocardless.idempotency import operation_key
+
+        self.ref.remote_payment_id = None
+        self.ref.billing_request_flow_id = "BRFOLD"
+        self.ref.billing_request_flow_generation = 0
+        self.ref.save()
+        client = Mock()
+        client.billing_request.return_value = {
+            "id": "BRQ123", "status": "pending",
+            "links": {"creditor": "CR123", "customer": "CU123"},
+            "mandate_request": {"scheme": "sepa_core", "currency": "EUR"},
+            "payment_request": None,
+        }
+        target = "https://example.org/return"
+        common = {"links": {"billing_request": "BRQ123"}, "redirect_uri": target,
+                  "exit_uri": target, "auto_fulfil": True, "lock_currency": True,
+                  "authorisation_url": "https://pay-sandbox.gocardless.com/test"}
+        client.flow.return_value = {"id": "BRFOLD", "expires_at": "2000-01-01T00:00:00Z", **common}
+        client.create_flow.return_value = {"id": "BRFNEW", "expires_at": "2099-01-01T00:00:00Z", **common}
+        client.validate_flow_url.side_effect = lambda url: url
+
+        self.assertEqual(start_authorisation(self.payment, client, "sandbox", "CR123", target),
+                         "https://pay-sandbox.gocardless.com/test")
+        self.ref.refresh_from_db()
+        self.assertEqual(self.ref.billing_request_flow_id, "BRFNEW")
+        self.assertEqual(self.ref.billing_request_flow_generation, 1)
+        client.flow.assert_called_once_with("BRFOLD")
+        client.create_flow.assert_called_once()
+        self.assertEqual(client.create_flow.call_args.args[2], operation_key(self.ref.creation_key, "hosted-flow", 1))
 
     @patch("pretix_gocardless.checkout.previous_completed_reference", return_value=None)
     def test_checkout_reuses_customer_and_rejects_mismatch(self, _previous):
@@ -422,9 +465,9 @@ class DatabaseTests(TestCase):
         client.billing_request.return_value = {"id": "BRQ123", "status": "pending", "links": {"creditor": "CR123", "customer": "CU123"},
             "mandate_request": {"scheme": "sepa_core", "currency": "EUR"}}
         target = "https://example.org/return"
-        client.create_flow.return_value = {"links": {"billing_request": "BRQ123"}, "redirect_uri": target,
+        client.create_flow.return_value = {"id": "BRF123", "links": {"billing_request": "BRQ123"}, "redirect_uri": target,
             "exit_uri": target, "auto_fulfil": True, "lock_currency": True,
-            "authorisation_url": "https://pay-sandbox.gocardless.com/test"}
+            "authorisation_url": "https://pay-sandbox.gocardless.com/test", "expires_at": "2099-01-01T00:00:00Z"}
         client.validate_flow_url.side_effect = lambda url: url
         with patch.object(TestPayment, "order", new_callable=PropertyMock,
                           return_value=SimpleNamespace(customer_id=None, event=SimpleNamespace(currency="EUR"))):
@@ -447,8 +490,10 @@ class DatabaseTests(TestCase):
         client.billing_request.side_effect = billing_request
         target = "https://example.org/return"
         def flow(billing_id, return_url, key, **kwargs):
-            return {"links": {"billing_request": billing_id}, "redirect_uri": target, "exit_uri": target,
-                    "auto_fulfil": True, "lock_currency": True, "authorisation_url": "https://pay-sandbox.gocardless.com/test"}
+            return {"id": "BRF" + billing_id[3:], "links": {"billing_request": billing_id},
+                    "redirect_uri": target, "exit_uri": target, "auto_fulfil": True,
+                    "lock_currency": True, "authorisation_url": "https://pay-sandbox.gocardless.com/test",
+                    "expires_at": "2099-01-01T00:00:00Z"}
         client.create_flow.side_effect = flow
         client.validate_flow_url.side_effect = lambda url: url
         start_authorisation(self.payment, client, "sandbox", "CR123", target)
