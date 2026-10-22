@@ -151,11 +151,12 @@ class WebhookDeliveryTests(TestCase):
             self.assertEqual(webhook(request, "sandbox").status_code, 498)
             self.assertEqual(webhook(factory.get("/gocardless/webhook/"), "sandbox").status_code, 405)
 
-    def test_http_endpoint_does_not_acknowledge_unhandled_mandate(self):
+    def test_http_endpoint_acknowledges_handled_mandate(self):
         module = ModuleType("pretix_gocardless.payment")
         module.GoCardlessProvider = Mock(return_value=SimpleNamespace(settings={"sandbox_webhook_secret": "test-secret"}))
         body, signature = signed([{"id": "EV123", "resource_type": "mandates", "links": {"mandate": "MD123"}}])
         request = RequestFactory().post("/gocardless/webhook/", data=body, content_type="application/json", HTTP_WEBHOOK_SIGNATURE=signature)
         request.event = object()
-        with patch.dict("sys.modules", {"pretix_gocardless.payment": module}):
-            self.assertEqual(webhook(request, "sandbox").status_code, 503)
+        with patch.dict("sys.modules", {"pretix_gocardless.payment": module}), \
+                patch("pretix_gocardless.views.process_reference", return_value="mandate_cancelled"):
+            self.assertEqual(webhook(request, "sandbox").status_code, 204)

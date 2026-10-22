@@ -33,12 +33,8 @@ def handle_delivery(body, signature, secret, handler):
 
 
 def process_reference(reference, event, provider, environment):
-    """Fetch and validate a payment within an event before reconciling it.
-
-    Mandate events still require implementation and are deliberately retried
-    rather than acknowledged. The provider remains disabled.
-    """
-    if reference.resource_type not in {"payments", "billing_requests"}:
+    """Fetch and validate a remote resource before changing local state."""
+    if reference.resource_type not in {"payments", "billing_requests", "mandates"}:
         raise RuntimeError("Resource processing is not implemented")
     if reference.resource_type == "billing_requests" and (provider is None or environment != "sandbox"):
         raise RuntimeError("Only sandbox billing execution is available")
@@ -46,6 +42,10 @@ def process_reference(reference, event, provider, environment):
     from .models import PaymentReference
     from .reconcile import reconcile
     from .validation import validate_mandate
+    client = Client(credential(getattr(provider, "account_settings", provider.settings), environment, "access_token"), environment)
+    if reference.resource_type == "mandates":
+        from .mandates import process_mandate
+        return process_mandate(reference, event, environment, client)
     if reference.resource_type == "billing_requests":
         from .billing import process_billing
         payment_reference = PaymentReference.objects.get(
@@ -53,8 +53,7 @@ def process_reference(reference, event, provider, environment):
         )
         if payment_reference.environment != environment:
             raise RuntimeError("Payment environment mismatch")
-        result = process_billing(payment_reference.pk, reference.event_id, environment,
-                                 Client(credential(getattr(provider, "account_settings", provider.settings), environment, "access_token"), environment))
+        result = process_billing(payment_reference.pk, reference.event_id, environment, client)
         if provider.settings.get("ticket_release") == "pending":
             from .ticketing import release_pending
             release_pending(payment_reference.pk)
@@ -65,7 +64,6 @@ def process_reference(reference, event, provider, environment):
     if (environment != payment_reference.environment or not payment_reference.mandate_id
             or not payment_reference.creditor_id):
         raise RuntimeError("Payment context is incomplete")
-    client = Client(credential(getattr(provider, "account_settings", provider.settings), environment, "access_token"), environment)
     mandate = client.mandate(payment_reference.mandate_id)
     validate_mandate(mandate, payment_reference.mandate_id, payment_reference.creditor_id)
     result = reconcile(payment_reference.pk, reference.event_id, environment,

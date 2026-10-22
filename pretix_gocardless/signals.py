@@ -36,6 +36,16 @@ def register_payment_reversed_notification(sender, **kwargs):
     )
 
 
+@receiver(register_notification_types, dispatch_uid="pretix_gocardless_mandate_inactive_notification")
+def register_mandate_inactive_notification(sender, **kwargs):
+    from pretix.base.notifications import ParametrizedOrderNotificationType
+    return ParametrizedOrderNotificationType(
+        sender, "pretix_gocardless.event.order.mandate_inactive",
+        _("GoCardless mandate is no longer usable"),
+        _("GoCardless mandate for order {order.code} is no longer usable — please review"),
+    )
+
+
 from pretix.control.signals import nav_organizer, order_info
 from pretix.presale.signals import order_info_top as presale_order_info_top
 from django.urls import reverse
@@ -46,6 +56,7 @@ from pretix.base.logentrytypes import log_entry_types, OrderLogEntryType
 @log_entry_types.new_from_dict({
     "pretix_gocardless.event.order.payment_failed": _("GoCardless payment {local_id} failed (status: {gocardless_status})."),
     "pretix_gocardless.event.order.payment_reversed": _("GoCardless payment {local_id} was reversed after confirmation (status: {gocardless_status}). The order and payment have not been changed; manual review is required."),
+    "pretix_gocardless.event.order.mandate_inactive": _("GoCardless mandate for payment {local_id} is no longer usable (status: {gocardless_mandate_status})."),
 })
 class GoCardlessOrderLogEntryType(OrderLogEntryType):
     pass

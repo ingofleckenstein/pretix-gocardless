@@ -13,6 +13,7 @@ class EventReference:
     resource_type: str
     resource_id: str
     related_mandate_id: str | None = None
+    action: str | None = None
 
 
 def event_reference(event):
@@ -40,10 +41,13 @@ def event_reference(event):
     object_id = links.get(key)
     if not isinstance(object_id, str) or not re.fullmatch(pattern, object_id):
         raise InvalidEvent("Invalid resource identifier")
+    action = event.get("action")
+    if action is not None and (not isinstance(action, str) or not re.fullmatch(r"[a-z_]+", action)):
+        raise InvalidEvent("Invalid event action")
     # These normal mandate lifecycle steps do not themselves change a pretix
     # payment. Payment events reconcile its current state independently.
     # Adverse mandate events must still be retried until handled explicitly.
-    if kind == "mandates" and event.get("action") in {"created", "submitted", "active"}:
+    if kind == "mandates" and action in {"created", "submitted", "active"}:
         return None
     # These are progress notifications, not authorisation. Processing them as
     # fulfilled requests creates avoidable 503 retries while the payer is
@@ -55,4 +59,7 @@ def event_reference(event):
     mandate_id = links.get("mandate_request_mandate") if kind == "billing_requests" else None
     if mandate_id is not None and (not isinstance(mandate_id, str) or not re.fullmatch(r"MD[A-Za-z0-9]+", mandate_id)):
         raise InvalidEvent("Invalid related mandate identifier")
-    return EventReference(event_id, kind, object_id, mandate_id)
+    return EventReference(
+        event_id, kind, object_id, mandate_id,
+        action if kind == "mandates" else None,
+    )

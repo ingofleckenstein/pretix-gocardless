@@ -40,8 +40,8 @@ identifier, so its first continuation after the update may create one new flow.
 ## Rollback
 
 Retain the database backup and prior image together. Do not reverse migrations
-0006 or 0007 during normal rollback: that discards incident flags or stored
-flow references. The previous application can run with unused extra database
+0006, 0007 or 0008 during normal rollback: that discards incident flags, stored
+flow references or mandate state. The previous application can run with unused extra database
 columns, but it will not preserve the new review or flow-reuse semantics.
 Suspend this provider until forward recovery is verified. Restoring
 a database backup can lose references to debits created after the backup;
@@ -59,6 +59,12 @@ debits merely to repair missing references.
   Investigate the financial, ticket and accounting consequences manually.
   Later webhooks do not clear the flag. Clear it only through a controlled
   maintenance action after resolving the incident; there is no automatic reset.
+- Failed, cancelled, expired, consumed and blocked mandates remain linked and
+  are shown as unusable. The linked payment is reconciled from its own current
+  API status; a mandate event alone never reverses a confirmed payment.
+- Replaced and transferred mandates are retried until a later version supports
+  atomic rebinding. Monitor these 503 responses and resolve them before enabling
+  operational payments.
 - Keep sandbox and live credentials and endpoint secrets separate. Changing
   the selected environment never changes existing references. Live execution
   stays disabled in this build.
@@ -79,17 +85,18 @@ test is not external sandbox evidence.
 | Confirmed release | Download and mail only when confirmed under the chosen policy |
 | Late chargeback | Persistent warning, one organizer notification, explicit manual resolution |
 | Replay / wrong signature / foreign reference | No foreign mutation, replay deduplication, invalid signature rejected |
-| Mandate changes | Adverse lifecycle events handled; current implementation still retries them |
+| Mandate changes | Failed/cancelled/expired state stored, linked payments independently reconciled, replay deduplicated; replacement/transfer still retried |
 | Reminder | Current API check, per-recipient deduplication, no reminder after completion |
 
 Previous external sandbox observations are useful history, not fresh
 verification of this wheel. Use synthetic identities for sandbox testing;
 do not transfer a real customer's details into the sandbox.
 
-Official references checked on 2026-10-21:
+Official references checked on 2026-10-22:
 
 - https://docs.pretix.eu/dev/development/api/payment.html
 - https://docs.gocardless.com/docs/api-reference/webhooks
+- https://docs.gocardless.com/docs/collect-payments/events-and-webhooks/mandate-events
 - https://docs.gocardless.com/docs/api-reference/payment
 
 The pretix development documentation currently targets a newer development

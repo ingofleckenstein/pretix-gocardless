@@ -279,6 +279,52 @@ class IntegrationChecks(unittest.TestCase):
         self.assertEqual(self.ref.remote_payment_id, self.remote["id"])
         self.assertEqual(self.reconcile(), "confirm")
 
+    def test_cancelled_mandate_reconciles_current_failed_payment_once(self):
+        from pretix_gocardless.events import EventReference
+        from pretix_gocardless.mandates import process_mandate
+        from pretix_gocardless.models import ProcessedEvent
+        client = Mock()
+        client.mandate.return_value = {
+            "id": self.ref.mandate_id, "status": "cancelled", "scheme": "sepa_core",
+            "links": {"creditor": self.ref.creditor_id},
+        }
+        client.payment.return_value = {**self.remote, "status": "failed"}
+        event_id = "EV" + uuid4().hex
+        reference = EventReference(event_id, "mandates", self.ref.mandate_id, action="cancelled")
+        self.assertEqual(
+            process_mandate(reference, self.event, "sandbox", client),
+            "mandate_cancelled:fail",
+        )
+        self.assertEqual(process_mandate(reference, self.event, "sandbox", client), "duplicate")
+        self.ref.refresh_from_db()
+        self.payment.refresh_from_db()
+        self.assertEqual(self.ref.mandate_status, "cancelled")
+        self.assertEqual(self.payment.state, "failed")
+        self.assertEqual(ProcessedEvent.objects.filter(event_id=event_id).count(), 1)
+
+    def test_cancelled_mandate_does_not_reverse_a_confirmed_payment(self):
+        from pretix_gocardless.events import EventReference
+        from pretix_gocardless.mandates import process_mandate
+        self.assertEqual(self.reconcile(), "confirm")
+        client = Mock()
+        client.mandate.return_value = {
+            "id": self.ref.mandate_id, "status": "cancelled", "scheme": "sepa_core",
+            "links": {"creditor": self.ref.creditor_id},
+        }
+        client.payment.return_value = self.remote
+        reference = EventReference(
+            "EV" + uuid4().hex, "mandates", self.ref.mandate_id, action="cancelled",
+        )
+        self.assertEqual(
+            process_mandate(reference, self.event, "sandbox", client),
+            "mandate_cancelled:noop",
+        )
+        self.payment.refresh_from_db()
+        self.ref.refresh_from_db()
+        self.assertEqual(self.payment.state, "confirmed")
+        self.assertEqual(self.ref.mandate_status, "cancelled")
+        self.assertFalse(self.ref.manual_review_required)
+
     def test_migration_preserves_existing_confirmed_chargeback(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
@@ -289,8 +335,10 @@ class IntegrationChecks(unittest.TestCase):
         MigrationExecutor(connection).migrate([("pretix_gocardless", "0005_reminderdelivery")])
         MigrationExecutor(connection).migrate([("pretix_gocardless", "0006_paymentreference_manual_review_required")])
         MigrationExecutor(connection).migrate([("pretix_gocardless", "0007_paymentreference_billing_request_flow")])
+        MigrationExecutor(connection).migrate([("pretix_gocardless", "0008_paymentreference_mandate_status")])
         self.ref.refresh_from_db()
         self.assertTrue(self.ref.manual_review_required)
+        self.assertEqual(self.ref.mandate_status, "")
 
 
 if __name__ == "__main__":

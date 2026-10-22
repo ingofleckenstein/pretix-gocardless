@@ -36,8 +36,11 @@ class OrganizerRoutingTests(TestCase):
             route_reference(self.reference, self.organizer, "sandbox", self.find, self.process)
         self.process.assert_not_called()
 
-    def test_unimplemented_mandate_and_lookup_failure_are_not_acknowledged(self):
+    def test_known_mandate_is_routed_and_lookup_failure_is_not_acknowledged(self):
         self.reference.resource_type = "mandates"
+        self.assertEqual(route_reference(self.reference, self.organizer, "sandbox", self.find, self.process), "done")
+        self.process.assert_called_with(self.reference, self.event, "sandbox")
+        self.find.side_effect = RuntimeError("database unavailable")
         with self.assertRaises(RuntimeError):
             route_reference(self.reference, self.organizer, "sandbox", self.find, self.process)
 
@@ -52,10 +55,12 @@ class OrganizerRoutingTests(TestCase):
                                         "pretix_gocardless.payment": payment}), \
                 patch("pretix_gocardless.webhooks.process_reference", return_value="processed") as process:
             self.assertEqual(process_organizer_reference(self.reference, self.organizer, "sandbox"), "processed")
-        query.filter.assert_called_once_with(remote_payment_id="PM1", environment="sandbox",
-                                             payment__order__event__organizer=self.organizer)
-        process.assert_called_once_with(self.reference, self.event, "provider", "sandbox")
-        self.reference.resource_type = "billing_requests"
-        self.find.side_effect = RuntimeError("database unavailable")
-        with self.assertRaises(RuntimeError):
-            route_reference(self.reference, self.organizer, "sandbox", self.find, self.process)
+            query.filter.assert_called_once_with(remote_payment_id="PM1", environment="sandbox",
+                                                 payment__order__event__organizer=self.organizer)
+            process.assert_called_once_with(self.reference, self.event, "provider", "sandbox")
+            self.reference.resource_type = "mandates"
+            self.reference.resource_id = "MD1"
+            query.reset_mock()
+            self.assertEqual(process_organizer_reference(self.reference, self.organizer, "sandbox"), "processed")
+            query.filter.assert_called_once_with(mandate_id="MD1", environment="sandbox",
+                                                 payment__order__event__organizer=self.organizer)

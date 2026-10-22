@@ -15,6 +15,37 @@ class RequiresManualReview(ReconciliationError):
     pass
 
 
+def apply_status(reference, payment, status):
+    """Apply one already validated remote payment status under row locks."""
+    review_required = getattr(reference, "manual_review_required", False)
+    action = decide(status, payment.state, reference.reversal_recorded)
+    if review_required:
+        # A late reversal stays visible until an operator resolves it. A later
+        # snapshot may be stored as an event, but must not clear the evidence.
+        return "manual_review"
+    if action is Decision.REVIEW:
+        raise RequiresManualReview("Unknown or inconsistent status requires review")
+    if action is Decision.REVERSE:
+        if reference.last_status not in {"failed", "cancelled", "customer_approval_denied", "charged_back"}:
+            payment.order.log_action("pretix_gocardless.event.order.payment_reversed", {
+                "local_id": payment.local_id, "gocardless_status": status,
+            })
+        reference.manual_review_required = True
+    if action is Decision.CONFIRM:
+        payment.confirm()
+    elif action is Decision.FAIL:
+        payment.fail(log_data={"gocardless_status": status})
+        payment.order.log_action("pretix_gocardless.event.order.payment_failed", {
+            "local_id": payment.local_id, "gocardless_status": status,
+        })
+        if reference.released_pending_tickets:
+            from .ticketing import revoke_pending
+            revoke_pending(reference, payment)
+    reference.last_status = status
+    reference.save(update_fields=["last_status", "manual_review_required"])
+    return action.value
+
+
 def reconcile(reference_id, event_id, environment, remote, *, mandate_id=None, creditor_id=None):
     """Reconcile an independently fetched payment while holding DB row locks.
 
@@ -52,34 +83,6 @@ def reconcile(reference_id, event_id, environment, remote, *, mandate_id=None, c
             status = validate_recovered_payment(remote, reference.remote_payment_id, payment.amount, mandate_id)
         else:
             status = validate_remote_payment(remote, reference.remote_payment_id, payment.amount)
-        review_required = getattr(reference, "manual_review_required", False)
-        action = decide(status, payment.state, reference.reversal_recorded)
-        if review_required:
-            # Persist and acknowledge the new event, but never silently resolve
-            # a late reversal or overwrite its evidence with another snapshot.
-            ProcessedEvent.objects.create(event_id=event_id, reference=reference)
-            return "manual_review"
-        if action is Decision.REVIEW:
-            raise RequiresManualReview("Unknown or inconsistent status requires review")
-        if action is Decision.REVERSE:
-            # The same remote state can be delivered in several distinct events.
-            # Log and notify once per transition, under the reference row lock.
-            if reference.last_status not in {"failed", "cancelled", "customer_approval_denied", "charged_back"}:
-                payment.order.log_action("pretix_gocardless.event.order.payment_reversed", {
-                    "local_id": payment.local_id, "gocardless_status": status,
-                })
-            reference.manual_review_required = True
-        if action is Decision.CONFIRM:
-            payment.confirm()
-        elif action is Decision.FAIL:
-            payment.fail(log_data={"gocardless_status": status})
-            payment.order.log_action("pretix_gocardless.event.order.payment_failed", {
-                "local_id": payment.local_id, "gocardless_status": status,
-            })
-            if reference.released_pending_tickets:
-                from .ticketing import revoke_pending
-                revoke_pending(reference, payment)
-        reference.last_status = status
-        reference.save(update_fields=["last_status", "manual_review_required"])
+        result = apply_status(reference, payment, status)
         ProcessedEvent.objects.create(event_id=event_id, reference=reference)
-        return action.value
+        return result

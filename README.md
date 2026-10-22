@@ -8,8 +8,9 @@ install it on an operational pretix instance.
 
 The current code contains an API client, event- and organizer-specific webhook
 endpoints and unit tests. Sandbox webhook delivery has been exercised against a
-public pretix installation. Full reconciliation, mandate events, refund
-accounting and production integration tests remain incomplete. Do not rely on
+public pretix installation. Adverse mandate states are stored and linked
+payments are reconciled from current API responses; mandate replacement,
+transfer, refund accounting and production integration remain incomplete. Do not rely on
 this experimental implementation for operational payments.
 
 The intended configuration offers either ticket release after a confirmed
@@ -60,9 +61,10 @@ is required for end-to-end webhook testing. A change of the selected
 environment does not change the environment of existing payments.
 An experimental organizer settings page also displays organizer-scoped webhook
 URLs and accepts separate GoCardless-generated secrets. Only sandbox dispatch is
-implemented. Organizer routing retries unknown payment references (including
-unrelated account activity), since early webhooks can precede local persistence;
-it also retries unimplemented mandate events. This may cause repeated deliveries
+implemented. Organizer routing retries unknown references (including unrelated
+account activity), since early webhooks can precede local persistence. Failed,
+cancelled, expired, consumed and blocked mandates are handled; replacement and
+transfer events are deliberately retried until atomic rebinding is implemented. This may cause repeated deliveries
 and is not yet suitable for an operational server. The event-specific settings
 and endpoint remain available for legacy sandbox testing. The organizer page
 also supports API tokens and creditor selection; when an organizer token is
@@ -144,6 +146,14 @@ and validates that same flow while it is unexpired. An expired flow advances a
 stored generation and receives a new purpose-separated idempotency key, so
 concurrent retries converge on one replacement. Flows created by older plugin
 versions cannot be recovered because their identifiers were never stored.
+
+Migration 0008 stores mandate status separately from payment status. Adverse
+mandate events are scoped to the organizer, environment and creditor and are
+deduplicated transactionally. Every linked payment is fetched and reconciled
+independently; cancellation of a mandate therefore cannot by itself reverse a
+confirmed payment. A pending local payment with no remote debit is failed when
+its mandate becomes unusable. Organizer and customer order views show that a
+new mandate is required. Replaced and transferred mandates remain fail-closed.
 
 The unit suite covers mocked reconciliation and SQLite transactions using small
 test models. `integration/run.py` additionally checks real pretix 2026.8 models

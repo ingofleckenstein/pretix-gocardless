@@ -28,6 +28,13 @@ def order_status(order):
         state = payment_status(reference) if reference else None
         if state:
             rows.append((state[0], payment.full_id, state[1]))
+        if reference and getattr(reference, "mandate_status", "") in {
+            "failed", "cancelled", "expired", "consumed", "blocked",
+        }:
+            rows.append((
+                "danger", payment.full_id,
+                _("SEPA mandate is no longer usable. A new mandate is required for future payments."),
+            ))
     return format_html_join("", '<div class="alert alert-{}" role="status"><strong>{}</strong>: {}</div>', rows)
 
 

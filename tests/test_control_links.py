@@ -45,3 +45,11 @@ class ControlLinksTests(TestCase):
             environment="sandbox", remote_payment_id="PM123", last_status="confirmed", manual_review_required=True))
         self.assertIn("alert-danger", str(order_status(self.order(payment))))
         self.assertIn("Manual review required", str(payment_links(self.order(payment))))
+
+    def test_inactive_mandate_is_visible_without_reversing_payment_badge(self):
+        payment = SimpleNamespace(full_id="A-P-1", state="confirmed", gocardless_reference=SimpleNamespace(
+            environment="sandbox", remote_payment_id="PM123", last_status="confirmed",
+            mandate_status="cancelled", manual_review_required=False))
+        result = str(order_status(self.order(payment)))
+        self.assertIn("alert-success", result)
+        self.assertIn("SEPA mandate is no longer usable", result)

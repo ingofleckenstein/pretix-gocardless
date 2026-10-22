@@ -29,6 +29,8 @@ class PaymentReference(models.Model):
     billing_request_flow_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
     billing_request_flow_generation = models.PositiveIntegerField(default=0)
     mandate_id = models.CharField(max_length=64, null=True, blank=True)
+    # Kept separately from last_status, which always describes the payment.
+    mandate_status = models.CharField(max_length=32, blank=True, default="")
     remote_payment_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
     last_status = models.CharField(max_length=40, blank=True)
     reversal_recorded = models.BooleanField(default=False)

@@ -22,7 +22,7 @@ class EventReferenceTests(TestCase):
     def test_cancelled_mandate_remains_for_explicit_handling(self):
         event = {"id": "EV12", "resource_type": "mandates", "action": "cancelled",
                  "links": {"mandate": "MD456"}}
-        self.assertEqual(event_reference(event), EventReference("EV12", "mandates", "MD456"))
+        self.assertEqual(event_reference(event), EventReference("EV12", "mandates", "MD456", action="cancelled"))
 
     def test_normal_mandate_progress_does_not_block_payment_events(self):
         for action in ("submitted", "active"):
@@ -33,7 +33,7 @@ class EventReferenceTests(TestCase):
     def test_failed_mandate_remains_for_explicit_handling(self):
         event = {"id": "EV12", "resource_type": "mandates", "action": "failed",
                  "links": {"mandate": "MD456"}}
-        self.assertEqual(event_reference(event), EventReference("EV12", "mandates", "MD456"))
+        self.assertEqual(event_reference(event), EventReference("EV12", "mandates", "MD456", action="failed"))
 
     def test_billing_request_with_mandate(self):
         event = {"id": "EV123", "resource_type": "billing_requests", "links": {"billing_request": "BRQ123", "mandate_request_mandate": "MD456"}}
@@ -54,3 +54,8 @@ class EventReferenceTests(TestCase):
         for links in (None, {}, {"billing_request": "BRQ1/../../x"}, {"billing_request": "BRQ1", "mandate_request_mandate": "MD1?x"}):
             with self.subTest(links=links), self.assertRaises(InvalidEvent):
                 event_reference({"id": "EV12", "resource_type": "billing_requests", "links": links})
+
+    def test_malformed_action_is_rejected(self):
+        with self.assertRaises(InvalidEvent):
+            event_reference({"id": "EV12", "resource_type": "mandates",
+                             "action": ["cancelled"], "links": {"mandate": "MD456"}})

@@ -10,7 +10,7 @@ def route_reference(reference, organizer, environment, find_reference, process):
     The lookup must constrain organizer and environment. Missing references,
     lookup errors and processing errors propagate for redelivery.
     """
-    if reference.resource_type not in {"billing_requests", "payments"}:
+    if reference.resource_type not in {"billing_requests", "payments", "mandates"}:
         raise RuntimeError("Resource processing is not implemented")
     payment_reference = find_reference(reference, organizer, environment)
     if payment_reference is None:
@@ -35,7 +35,11 @@ def process_organizer_reference(reference, organizer, environment):
     from .webhooks import process_reference
 
     def find(ref, owner, env):
-        field = {"payments": "remote_payment_id", "billing_requests": "billing_request_id"}[ref.resource_type]
+        field = {
+            "payments": "remote_payment_id",
+            "billing_requests": "billing_request_id",
+            "mandates": "mandate_id",
+        }[ref.resource_type]
         return PaymentReference.objects.select_related("payment__order__event").filter(
             **{field: ref.resource_id, "environment": env,
                "payment__order__event__organizer": owner}

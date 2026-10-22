@@ -32,6 +32,10 @@ def assess(reference, payment, client):
         if status in {"failed", "cancelled", "customer_approval_denied", "charged_back"}:
             return CustomerStatus.FAILED
         return CustomerStatus.UNKNOWN
+    if getattr(reference, "mandate_status", "") in {
+        "failed", "cancelled", "expired", "consumed", "blocked",
+    }:
+        return CustomerStatus.FAILED
     if not reference.billing_request_id:
         return CustomerStatus.UNKNOWN
     billing = client.billing_request(reference.billing_request_id)

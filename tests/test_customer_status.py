@@ -56,3 +56,9 @@ class CustomerStatusTests(TestCase):
         self.assertEqual(assess(self.ref, self.payment, self.client), CustomerStatus.FAILED)
         self.client.payment.assert_not_called()
         self.client.billing_request.assert_not_called()
+
+    def test_inactive_mandate_without_payment_is_failed(self):
+        self.ref.remote_payment_id = None
+        self.ref.mandate_status = "cancelled"
+        self.assertEqual(assess(self.ref, self.payment, self.client), CustomerStatus.FAILED)
+        self.client.billing_request.assert_not_called()
