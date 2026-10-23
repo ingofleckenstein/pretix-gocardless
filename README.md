@@ -13,7 +13,7 @@ you intend to use.
 
 ## Portability
 
-The plugin contains no Selbstsein-specific domain, organizer ID, customer
+The plugin contains no tenant-specific domain, organizer ID, customer
 account, or Keycloak dependency. It uses pretix's event and organizer settings
 for GoCardless credentials, creditor selection, webhooks, ticket handling and
 reminder addresses. The GoCardless API hosts are provider endpoints. Some
