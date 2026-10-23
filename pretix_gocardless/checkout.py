@@ -44,6 +44,7 @@ def locked_checkout_payment(payment):
 
 
 def ensure_billing_request(client, creditor_id, creation_key, known_id=None, customer_id=None, bank_account_id=None):
+    """Reuse the persisted mandate request or recover it by its stable key."""
     if known_id:
         billing_id = known_id
     else:
@@ -87,6 +88,7 @@ def reusable_bank_account(client, billing_id, creditor_id, customer_id):
 
 
 def previous_completed_reference(customer_id, environment, creditor_id, reference_id):
+    """Find another order by this signed-in customer in the same GC account."""
     from .models import PaymentReference
     return (PaymentReference.objects.filter(
         payment__order__customer_id=customer_id, environment=environment,
@@ -128,9 +130,13 @@ def start_reused_mandate(payment, client, environment, creditor_id):
 
     if transaction.get_connection().in_atomic_block:
         raise CheckoutMismatch("The payment intent must be committed before the API call")
+    # Commit the local key first. If the process dies after GoCardless creates
+    # a debit, the next request can recover it using this same key.
     ref, _ = PaymentReference.objects.get_or_create(
         payment=payment, defaults={"environment": environment, "creditor_id": creditor_id},
     )
+    # The customer lock keeps two simultaneous orders from choosing different
+    # identities or mandates while their payment references are bound.
     with transaction.atomic():
         Customer.objects.select_for_update().get(pk=payment.order.customer_id)
         ref = PaymentReference.objects.select_for_update().get(pk=ref.pk)
@@ -157,6 +163,9 @@ def start_reused_mandate(payment, client, environment, creditor_id):
     with transaction.atomic():
         ref = PaymentReference.objects.select_for_update().get(pk=ref.pk)
         payment = locked_checkout_payment(payment)
+        # Remote creation happens only after the mandate binding is durable.
+        # Validate the fetched debit against amount and mandate even when the
+        # API reports an idempotency conflict or a stored ID is reused.
         if not ref.remote_payment_id:
             try:
                 remote = client.create_debit_payment(ref.mandate_id, payment.amount,
@@ -176,6 +185,7 @@ def start_reused_mandate(payment, client, environment, creditor_id):
 
 def ensure_hosted_flow(client, billing_id, creation_key, return_url, prefilled_customer=None,
                        known_id=None, generation=0):
+    """Fetch or create a flow, then verify it still represents this checkout."""
     if known_id:
         flow = client.flow(known_id)
     else:
@@ -214,6 +224,8 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
 
     if transaction.get_connection().in_atomic_block:
         raise CheckoutMismatch("The payment intent must be committed before the API call")
+    # The reference and its random key outlive this request. A browser retry
+    # must find the original intent instead of creating another one.
     reference, _ = PaymentReference.objects.get_or_create(
         payment=payment, defaults={"environment": environment, "creditor_id": creditor_id},
     )
@@ -266,6 +278,9 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
             known_id=known_flow_id, generation=generation,
         )
         if hosted.expired():
+            # Another request may already have replaced this flow. Advance
+            # the generation only while the row still points to the one we
+            # just inspected; then retry from the authoritative database row.
             with transaction.atomic():
                 reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
                 locked_checkout_payment(payment)

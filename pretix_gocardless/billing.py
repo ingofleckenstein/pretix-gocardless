@@ -1,7 +1,7 @@
-"""Experimental transactional bridge for fulfilled billing requests.
+"""Turn one fulfilled sandbox billing request into one linked debit.
 
-Checkout remains disabled. The caller must authenticate the webhook and bind
-the reference to the current event before calling this service.
+The caller authenticates the webhook and binds its reference to the current
+event before entering this service. Live billing execution remains disabled.
 """
 import re
 from django.db import transaction
@@ -16,6 +16,8 @@ def process_billing(reference_id, event_id, environment, client):
 
     if not isinstance(event_id, str) or not re.fullmatch(r"EV[A-Za-z0-9]+", event_id):
         raise ReconciliationError("Invalid event identifier")
+    # Serialize a billing event with other attempts for this payment. A
+    # redelivered event returns before any remote debit creation.
     with transaction.atomic():
         ref = PaymentReference.objects.select_for_update().get(pk=reference_id)
         if ref.environment != environment or not ref.creditor_id or not ref.billing_request_id:
@@ -34,6 +36,9 @@ def process_billing(reference_id, event_id, environment, client):
         if not ref.remote_payment_id:
             from .checkout import locked_checkout_payment
             payment = locked_checkout_payment(payment)
+        # A signed webhook proves where the event came from, but not that its
+        # billing request belongs to this pretix customer. Bind that customer
+        # before ensure_debit fetches the remote mandate and payment.
         expected_customer_id = None
         if payment.order.customer_id:
             customer_link = CustomerLink.objects.filter(

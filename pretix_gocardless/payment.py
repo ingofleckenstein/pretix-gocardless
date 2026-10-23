@@ -34,7 +34,8 @@ class GoCardlessProvider(BasePaymentProvider):
         return getattr(request, "customer", None) if request is not None else None
 
     def _environment(self, order=None):
-        # Check the persisted order as well: the event can change mode later.
+        # Test orders stay in Sandbox even if the organizer later changes the
+        # event setting. Existing payment references keep their own environment.
         if getattr(self.event, "testmode", False) or (order is not None and getattr(order, "testmode", False)):
             return "sandbox"
         return self.settings.get("environment")
@@ -258,6 +259,8 @@ class GoCardlessProvider(BasePaymentProvider):
             creditor = resolve(self.account_settings, "sandbox")
             reused = start_reused_mandate(payment, client, "sandbox", creditor)
             if reused:
+                # An existing authorized mandate needs a new debit for this
+                # order, but no second hosted consent flow.
                 url = eventreverse_absolute(self.event, "presale:event.order", kwargs={
                     "order": payment.order.code, "secret": payment.order.secret,
                 })

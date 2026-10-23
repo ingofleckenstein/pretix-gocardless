@@ -1,4 +1,4 @@
-"""Event-specific webhook endpoint; checkout remains disabled."""
+"""Customer return/resume views and the legacy event-specific webhook."""
 from django.http import Http404, HttpResponse
 from django.shortcuts import redirect, get_object_or_404
 from django.contrib import messages
@@ -92,6 +92,9 @@ def return_from_gocardless(request, order, hash, payment, *args, **kwargs):
     try:
         if reference.environment != "sandbox":
             raise ValueError("Sandbox required")
+        # The browser return is only a cue to check the remote billing request;
+        # it is never proof of consent or payment. This stable local event ID
+        # lets a repeated return share the same deduplication path as webhooks.
         process_billing(reference.pk, "EVRETURN" + reference.creation_key.hex, "sandbox",
                         Client(credential(provider.account_settings, "sandbox", "access_token"), "sandbox"))
         if provider.settings.get("ticket_release") == "pending":

@@ -16,7 +16,7 @@ class RequiresManualReview(ReconciliationError):
 
 
 def apply_status(reference, payment, status):
-    """Apply one already validated remote payment status under row locks."""
+    """Apply a validated debit status without confusing it with mandate state."""
     review_required = getattr(reference, "manual_review_required", False)
     action = decide(status, payment.state, reference.reversal_recorded)
     if review_required:
@@ -26,6 +26,8 @@ def apply_status(reference, payment, status):
     if action is Decision.REVIEW:
         raise RequiresManualReview("Unknown or inconsistent status requires review")
     if action is Decision.REVERSE:
+        # Pretix cannot fail an already confirmed payment. Preserve the paid
+        # order and raise one persistent incident for human financial review.
         if reference.last_status not in {"failed", "cancelled", "customer_approval_denied", "charged_back"}:
             payment.order.log_action("pretix_gocardless.event.order.payment_reversed", {
                 "local_id": payment.local_id, "gocardless_status": status,
@@ -84,5 +86,7 @@ def reconcile(reference_id, event_id, environment, remote, *, mandate_id=None, c
         else:
             status = validate_remote_payment(remote, reference.remote_payment_id, payment.amount)
         result = apply_status(reference, payment, status)
+        # Only mark the event processed after the local state change succeeds;
+        # the transaction rolls both back together on any error.
         ProcessedEvent.objects.create(event_id=event_id, reference=reference)
         return result

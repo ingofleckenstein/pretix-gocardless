@@ -1,8 +1,8 @@
-"""Experimental ticket policy, separate from payment confirmation.
+"""Pure ticket-policy decisions, separate from payment confirmation.
 
-This module is intentionally not connected to checkout yet. A caller must
-authenticate and validate the current payment and own any validity flag it
-changes; it must not revoke a flag set by an administrator or another plugin.
+This helper is tested independently; the active checkout uses ticketing.py for
+pretix state changes. That code must own any validity flag it changes and must
+not revoke one set by an administrator or another plugin.
 """
 from enum import Enum
 

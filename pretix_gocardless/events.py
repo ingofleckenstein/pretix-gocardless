@@ -44,9 +44,9 @@ def event_reference(event):
     action = event.get("action")
     if action is not None and (not isinstance(action, str) or not re.fullmatch(r"[a-z_]+", action)):
         raise InvalidEvent("Invalid event action")
-    # These normal mandate lifecycle steps do not themselves change a pretix
-    # payment. Payment events reconcile its current state independently.
-    # Adverse mandate events must still be retried until handled explicitly.
+    # Normal mandate progress does not decide whether a debit was collected;
+    # payment events reconcile that separately. Adverse mandate events are
+    # passed on so their status can be stored and linked debits checked.
     if kind == "mandates" and action in {"created", "submitted", "active"}:
         return None
     # These are progress notifications, not authorisation. Processing them as

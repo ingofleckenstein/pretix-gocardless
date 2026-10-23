@@ -1,6 +1,7 @@
-"""Route account-wide GoCardless events to a known organizer payment.
+"""Route an organizer-wide webhook to the pretix event owning its payment.
 
-This is not yet wired into a public endpoint; authentication must happen first.
+The public organizer endpoint verifies the signature and establishes the
+organizer scope before calling this module. Unknown references are retried.
 """
 
 
@@ -35,6 +36,9 @@ def process_organizer_reference(reference, organizer, environment):
     from .webhooks import process_reference
 
     def find(ref, owner, env):
+        # GoCardless has different resource IDs for the authorization, debit
+        # and mandate. All three must resolve within this organizer and
+        # environment before any event-specific handler runs.
         field = {
             "payments": "remote_payment_id",
             "billing_requests": "billing_request_id",

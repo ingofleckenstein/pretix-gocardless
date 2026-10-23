@@ -35,6 +35,9 @@ def process_mandate(reference, event, environment, client):
         raise ReconciliationError("Mandate action requires explicit handling")
 
     with transaction.atomic():
+        # A signed mandate event can concern several pretix orders because a
+        # signed-in customer may reuse one mandate. Lock all local references
+        # in a stable order so each linked debit is considered exactly once.
         references = list(
             PaymentReference.objects.select_for_update()
             .select_related("payment__order__event")
@@ -75,12 +78,17 @@ def process_mandate(reference, event, environment, client):
             item.mandate_status = mandate_status
             item.save(update_fields=["mandate_status"])
             if item.remote_payment_id:
+                # Cancelling the mandate prevents future collections but does
+                # not tell us whether this already created debit will settle.
+                # Its own current GoCardless status decides the pretix payment.
                 remote = client.payment(item.remote_payment_id)
                 payment_status = validate_recovered_payment(
                     remote, item.remote_payment_id, payment.amount, item.mandate_id,
                 )
                 results.append(apply_status(item, payment, payment_status))
             elif mandate_status in INACTIVE_MANDATE_STATUSES and payment.state in {"created", "pending"}:
+                # Without any remote debit there is nothing that can still
+                # settle; close the pending local attempt and its early ticket.
                 payment.fail(log_data={"gocardless_mandate_status": mandate_status})
                 payment.order.log_action("pretix_gocardless.event.order.mandate_inactive", {
                     "local_id": payment.local_id, "gocardless_mandate_status": mandate_status,

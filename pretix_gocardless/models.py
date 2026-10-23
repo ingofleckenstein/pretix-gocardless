@@ -1,10 +1,11 @@
-"""Persistent references for future transactional webhook handling."""
+"""Local links between pretix orders, GoCardless resources and event history."""
 import uuid
 
 from django.db import models
 
 
 class CustomerLink(models.Model):
+    """Reusable GoCardless customer identity for one pretix customer/account."""
     id = models.AutoField(primary_key=True)
     customer = models.ForeignKey("pretixbase.Customer", on_delete=models.CASCADE, related_name="gocardless_links")
     environment = models.CharField(max_length=10, choices=(("sandbox", "Sandbox"), ("live", "Live")))
@@ -17,6 +18,7 @@ class CustomerLink(models.Model):
 
 
 class PaymentReference(models.Model):
+    """One pretix payment intent and every remote resource created for it."""
     id = models.AutoField(primary_key=True)
     payment = models.OneToOneField("pretixbase.OrderPayment", on_delete=models.PROTECT, related_name="gocardless_reference")
     # Random keys are saved before remote calls so retries can reuse them.
@@ -27,6 +29,8 @@ class PaymentReference(models.Model):
     # Persist only the flow identifier. The authorisation URL contains an
     # access token and must never be stored in the database.
     billing_request_flow_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
+    # An expired flow gets a new generation, hence a new idempotency key;
+    # retries within the same generation still converge on one flow.
     billing_request_flow_generation = models.PositiveIntegerField(default=0)
     mandate_id = models.CharField(max_length=64, null=True, blank=True)
     # Kept separately from last_status, which always describes the payment.

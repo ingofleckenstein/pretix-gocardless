@@ -1,8 +1,9 @@
-"""Draft debit creation/recovery. Not connected to pretix checkout.
+"""Create or recover the one debit belonging to a completed billing request.
 
-Callers must lock the local reference, persist the random creation key before
-the first API request, and store the resulting mandate/payment IDs. Timeouts
-must be retried with the same key; no second payment may be started as a retry.
+The sandbox billing webhook calls this service after the customer finishes the
+hosted flow. Its caller locks the local reference and persists the creation key
+before the first API request. Retries use that same key, including after a
+timeout; they must never start a second debit for the same pretix payment.
 """
 from .client import IdempotencyConflict
 from .idempotency import operation_key
@@ -32,6 +33,8 @@ def ensure_debit(client, *, billing_request_id, creditor_id, amount, creation_ke
     mandate_status = validate_mandate(mandate, mandate_id, creditor_id)
     if not known_payment_id and mandate_status not in {"pending_submission", "submitted", "active"}:
         raise MandateNotReady("Mandate is not available for collection")
+    # Once a remote payment ID is stored, recover and validate that payment
+    # even if the mandate has since been cancelled. The debit has its own life.
     if known_payment_id:
         payment_id = known_payment_id
     else:
