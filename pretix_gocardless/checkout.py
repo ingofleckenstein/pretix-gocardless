@@ -4,6 +4,8 @@ The caller must durably persist the creation UUID before any remote request
 and save the returned billing request ID before starting the flow. This module
 never creates a debit or marks an order paid.
 """
+from dataclasses import dataclass
+from datetime import datetime, timezone as datetime_timezone
 import re
 
 from .client import IdempotencyConflict
@@ -14,13 +16,44 @@ class CheckoutMismatch(ValueError):
     pass
 
 
-def ensure_billing_request(client, creditor_id, creation_key, known_id=None, customer_id=None):
+@dataclass(frozen=True)
+class HostedFlow:
+    id: str
+    url: str
+    expires_at: datetime
+
+    def expired(self, current_time=None):
+        current_time = current_time or datetime.now(datetime_timezone.utc)
+        return self.expires_at <= current_time
+
+
+def locked_checkout_payment(payment):
+    """Re-read the payment under a row lock before starting any remote intent.
+
+    A request object can be stale while another worker cancels or confirms the
+    payment. The lock must be held by the caller for the remote operation.
+    """
+    from pretix.base.models import Order, OrderPayment
+    current = OrderPayment.objects.select_for_update().get(pk=payment.pk)
+    order = Order.objects.select_for_update().get(pk=current.order_id)
+    if (current.provider != "gocardless" or current.state not in {"created", "pending"}
+            or current.amount != payment.amount or order.event.currency != "EUR"
+            or getattr(order, "status", "n") != "n"):
+        raise CheckoutMismatch("The payment is no longer eligible for collection")
+    return current
+
+
+def ensure_billing_request(client, creditor_id, creation_key, known_id=None, customer_id=None, bank_account_id=None):
+    """Reuse the persisted mandate request or recover it by its stable key."""
     if known_id:
         billing_id = known_id
     else:
         try:
             args = (creditor_id, operation_key(creation_key, "mandate-request"))
-            billing_id = client.create_mandate_request(*args, customer_id=customer_id)["id"] if customer_id else client.create_mandate_request(*args)["id"]
+            if bank_account_id:
+                billing_id = client.create_mandate_request(*args, customer_id=customer_id, bank_account_id=bank_account_id)["id"]
+            else:
+                billing_id = client.create_mandate_request(*args, customer_id=customer_id)["id"] if customer_id else client.create_mandate_request(*args)["id"]
         except IdempotencyConflict as exc:
             billing_id = exc.resource_id
     if not isinstance(billing_id, str) or not re.fullmatch(r"BRQ[A-Za-z0-9]+", billing_id):
@@ -32,24 +65,151 @@ def ensure_billing_request(client, creditor_id, creation_key, known_id=None, cus
             or not isinstance(links, dict) or links.get("creditor") != creditor_id
             or not isinstance(mandate, dict) or mandate.get("scheme") != "sepa_core"
             or mandate.get("currency") != "EUR" or billing.get("payment_request") is not None
-            or (customer_id and links.get("customer") != customer_id)):
+            or (customer_id and links.get("customer") != customer_id)
+            or (bank_account_id and links.get("customer_bank_account") != bank_account_id)):
         raise CheckoutMismatch("Billing request does not match the original mandate intent")
     return billing_id
 
 
-def ensure_hosted_flow(client, billing_id, creation_key, return_url, prefilled_customer=None):
-    try:
-        args = (billing_id, return_url, operation_key(creation_key, "hosted-flow"))
-        flow = (client.create_flow(*args, prefilled_customer=prefilled_customer) if prefilled_customer
-                else client.create_flow(*args))
-    except IdempotencyConflict as exc:
-        flow = client.flow(exc.resource_id)
+def reusable_bank_account(client, billing_id, creditor_id, customer_id):
+    """Return a verified reference, never the customer's bank details."""
+    billing = client.billing_request(billing_id)
+    links = billing.get("links") or {}
+    if (billing.get("id") != billing_id or billing.get("status") != "fulfilled"
+            or links.get("creditor") != creditor_id or links.get("customer") != customer_id):
+        raise CheckoutMismatch("Previous billing request does not match this customer")
+    bank_id = links.get("customer_bank_account")
+    if not isinstance(bank_id, str) or not re.fullmatch(r"BA[A-Za-z0-9]+", bank_id):
+        return None
+    bank = client.customer_bank_account(bank_id)
+    if (bank.get("id") != bank_id or (bank.get("links") or {}).get("customer") != customer_id):
+        raise CheckoutMismatch("Bank account does not belong to this customer")
+    return bank_id if bank.get("enabled") is True and bank.get("currency") == "EUR" else None
+
+
+def previous_completed_reference(customer_id, environment, creditor_id, reference_id):
+    """Find another order by this signed-in customer in the same GC account."""
+    from .models import PaymentReference
+    return (PaymentReference.objects.filter(
+        payment__order__customer_id=customer_id, environment=environment,
+        creditor_id=creditor_id, remote_payment_id__isnull=False,
+        billing_request_id__isnull=False,
+    ).exclude(pk=reference_id).order_by("-created").first())
+
+
+def verified_reusable_mandate(client, previous, creditor_id, customer_id):
+    """Verify the original customer authorization and the current mandate."""
+    from .validation import fulfilled_mandate_id, validate_mandate
+
+    billing = client.billing_request(previous.billing_request_id)
+    if (billing.get("links") or {}).get("customer") != customer_id:
+        raise CheckoutMismatch("Previous mandate belongs to a different customer")
+    mandate_id = fulfilled_mandate_id(billing, previous.billing_request_id, creditor_id)
+    if previous.mandate_id != mandate_id:
+        raise CheckoutMismatch("Previous mandate reference changed")
+    bank_id = reusable_bank_account(client, previous.billing_request_id, creditor_id, customer_id)
+    mandate = client.mandate(mandate_id)
+    state = validate_mandate(mandate, mandate_id, creditor_id)
+    if not bank_id or (mandate.get("links") or {}).get("customer_bank_account") != bank_id:
+        return None
+    return mandate_id if state in {"pending_submission", "submitted", "active"} else None
+
+
+def start_reused_mandate(payment, client, environment, creditor_id):
+    """Start one independent payment, or return False when a new mandate is needed.
+
+    The mandate choice and idempotency key are committed before any debit API
+    call; a retry must never silently switch to a different mandate.
+    """
+    if not payment.order.customer_id:
+        return False
+    from django.db import transaction
+    from pretix.base.models import Customer
+    from .models import CustomerLink, PaymentReference
+    from .validation import validate_recovered_payment
+
+    if transaction.get_connection().in_atomic_block:
+        raise CheckoutMismatch("The payment intent must be committed before the API call")
+    # Commit the local key first. If the process dies after GoCardless creates
+    # a debit, the next request can recover it using this same key.
+    ref, _ = PaymentReference.objects.get_or_create(
+        payment=payment, defaults={"environment": environment, "creditor_id": creditor_id},
+    )
+    # The customer lock keeps two simultaneous orders from choosing different
+    # identities or mandates while their payment references are bound.
+    with transaction.atomic():
+        Customer.objects.select_for_update().get(pk=payment.order.customer_id)
+        ref = PaymentReference.objects.select_for_update().get(pk=ref.pk)
+        if ref.environment != environment or ref.creditor_id != creditor_id:
+            raise CheckoutMismatch("Payment configuration changed")
+        if ref.billing_request_id:
+            return False
+        payment = locked_checkout_payment(payment)
+        link = CustomerLink.objects.filter(customer_id=payment.order.customer_id,
+                                           environment=environment, creditor_id=creditor_id).first()
+        previous = previous_completed_reference(payment.order.customer_id, environment, creditor_id, ref.pk)
+        if not link or not previous:
+            if ref.mandate_id or ref.remote_payment_id:
+                raise CheckoutMismatch("Original mandate binding is missing")
+            return False
+        mandate_id = verified_reusable_mandate(client, previous, creditor_id, link.remote_customer_id)
+        if ref.mandate_id and ref.mandate_id != mandate_id:
+            raise CheckoutMismatch("Original mandate is no longer available")
+        if not mandate_id:
+            return False
+        ref.mandate_id = mandate_id
+        ref.save(update_fields=["mandate_id"])
+
+    with transaction.atomic():
+        ref = PaymentReference.objects.select_for_update().get(pk=ref.pk)
+        payment = locked_checkout_payment(payment)
+        # Remote creation happens only after the mandate binding is durable.
+        # Validate the fetched debit against amount and mandate even when the
+        # API reports an idempotency conflict or a stored ID is reused.
+        if not ref.remote_payment_id:
+            try:
+                remote = client.create_debit_payment(ref.mandate_id, payment.amount,
+                                                     operation_key(ref.creation_key, "debit-payment"))
+                payment_id = remote.get("id")
+            except IdempotencyConflict as exc:
+                payment_id = exc.resource_id
+        else:
+            payment_id = ref.remote_payment_id
+        remote = client.payment(payment_id)
+        status = validate_recovered_payment(remote, payment_id, payment.amount, ref.mandate_id)
+        ref.remote_payment_id = payment_id
+        ref.last_status = status
+        ref.save(update_fields=["remote_payment_id", "last_status"])
+    return True
+
+
+def ensure_hosted_flow(client, billing_id, creation_key, return_url, prefilled_customer=None,
+                       known_id=None, generation=0):
+    """Fetch or create a flow, then verify it still represents this checkout."""
+    if known_id:
+        flow = client.flow(known_id)
+    else:
+        try:
+            args = (billing_id, return_url, operation_key(creation_key, "hosted-flow", generation))
+            flow = (client.create_flow(*args, prefilled_customer=prefilled_customer) if prefilled_customer
+                    else client.create_flow(*args))
+        except IdempotencyConflict as exc:
+            flow = client.flow(exc.resource_id)
     links = flow.get("links")
-    if (not isinstance(links, dict) or links.get("billing_request") != billing_id
+    flow_id = flow.get("id")
+    expires_at = flow.get("expires_at")
+    try:
+        parsed_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        parsed_expiry = None
+    if (not isinstance(flow_id, str) or not re.fullmatch(r"BRF[A-Za-z0-9]+", flow_id)
+            or (known_id and flow_id != known_id)
+            or not isinstance(links, dict) or links.get("billing_request") != billing_id
             or flow.get("redirect_uri") != return_url or flow.get("exit_uri") != return_url
-            or flow.get("auto_fulfil") is not True or flow.get("lock_currency") is not True):
+            or flow.get("auto_fulfil") is not True or flow.get("lock_currency") is not True
+            or parsed_expiry is None or parsed_expiry.tzinfo is None):
         raise CheckoutMismatch("Hosted flow does not match the original intent")
-    return client.validate_flow_url(flow.get("authorisation_url", ""))
+    return HostedFlow(flow_id, client.validate_flow_url(flow.get("authorisation_url", "")), parsed_expiry)
 
 
 def start_authorisation(payment, client, environment, creditor_id, return_url):
@@ -64,6 +224,8 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
 
     if transaction.get_connection().in_atomic_block:
         raise CheckoutMismatch("The payment intent must be committed before the API call")
+    # The reference and its random key outlive this request. A browser retry
+    # must find the original intent instead of creating another one.
     reference, _ = PaymentReference.objects.get_or_create(
         payment=payment, defaults={"environment": environment, "creditor_id": creditor_id},
     )
@@ -75,11 +237,17 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
             raise CheckoutMismatch("Payment configuration changed")
         if reference.remote_payment_id:
             raise CheckoutMismatch("A debit is already associated with this payment")
+        payment = locked_checkout_payment(payment)
         customer_link = (CustomerLink.objects.filter(customer_id=payment.order.customer_id,
                          environment=environment, creditor_id=creditor_id).first() if payment.order.customer_id else None)
         expected_customer = customer_link.remote_customer_id if customer_link else None
+        bank_id = None
+        if expected_customer and not reference.billing_request_id:
+            previous = previous_completed_reference(payment.order.customer_id, environment, creditor_id, reference.pk)
+            if previous:
+                bank_id = reusable_bank_account(client, previous.billing_request_id, creditor_id, expected_customer)
         billing_id = ensure_billing_request(client, creditor_id, reference.creation_key,
-                                            reference.billing_request_id, expected_customer)
+                                            reference.billing_request_id, expected_customer, bank_id)
         billing = client.billing_request(billing_id)
         remote_customer = billing.get("links", {}).get("customer")
         if not isinstance(remote_customer, str) or not re.fullmatch(r"CU[A-Za-z0-9]+", remote_customer):
@@ -92,6 +260,48 @@ def start_authorisation(payment, client, environment, creditor_id, return_url):
         reference.billing_request_id = billing_id
         reference.save(update_fields=["billing_request_id"])
     # The billing ID and its key have been committed before starting the flow.
-    from .addresses import prefilled_address
-    return ensure_hosted_flow(client, billing_id, reference.creation_key, return_url, prefilled_address(payment.order))
+    # Reuse a stored, unexpired flow. Expired flows receive a new generation so
+    # the API idempotency key intentionally creates one replacement resource.
+    from .addresses import prefilled_customer
+    customer_data = prefilled_customer(payment.order)
+    while True:
+        with transaction.atomic():
+            reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
+            payment = locked_checkout_payment(payment)
+            if reference.billing_request_id != billing_id:
+                raise CheckoutMismatch("Billing request changed")
+            known_flow_id = reference.billing_request_flow_id
+            generation = reference.billing_request_flow_generation
 
+        hosted = ensure_hosted_flow(
+            client, billing_id, reference.creation_key, return_url, customer_data,
+            known_id=known_flow_id, generation=generation,
+        )
+        if hosted.expired():
+            # Another request may already have replaced this flow. Advance
+            # the generation only while the row still points to the one we
+            # just inspected; then retry from the authoritative database row.
+            with transaction.atomic():
+                reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
+                locked_checkout_payment(payment)
+                if reference.billing_request_flow_id == hosted.id:
+                    reference.billing_request_flow_id = None
+                    reference.billing_request_flow_generation += 1
+                    reference.save(update_fields=["billing_request_flow_id", "billing_request_flow_generation"])
+                elif reference.billing_request_flow_id is None and not known_flow_id:
+                    raise CheckoutMismatch("GoCardless returned an expired hosted flow")
+            continue
+
+        with transaction.atomic():
+            reference = PaymentReference.objects.select_for_update().get(pk=reference.pk)
+            locked_checkout_payment(payment)
+            if reference.billing_request_id != billing_id:
+                raise CheckoutMismatch("Billing request changed")
+            if (reference.billing_request_flow_id is None
+                    and reference.billing_request_flow_generation == generation):
+                reference.billing_request_flow_id = hosted.id
+                reference.save(update_fields=["billing_request_flow_id"])
+            if reference.billing_request_flow_id == hosted.id:
+                return hosted.url
+            # A concurrent request stored the authoritative flow. Fetch and
+            # validate that resource on the next iteration.

@@ -10,10 +10,11 @@ from pretix_gocardless.ticketing import release_pending, revoke_pending
 class TicketingTests(TestCase):
     def setUp(self):
         self.order = SimpleNamespace(status="n", require_approval=False, pending_sum=Decimal("12.34"),
-                                     valid_if_pending=False, save=Mock(), log_action=Mock())
+                                     valid_if_pending=False, save=Mock(), log_action=Mock(),
+                                     event=object(), send_mail=Mock())
         self.payment = SimpleNamespace(state="pending", amount=Decimal("12.34"), order_id=7)
         self.reference = SimpleNamespace(last_status="pending_submission", payment=self.payment,
-                                         released_pending_tickets=False, save=Mock())
+                                         remote_payment_id="PM123", released_pending_tickets=False, save=Mock())
         order_model = SimpleNamespace(STATUS_PENDING="n", objects=Mock())
         order_model.objects.select_for_update.return_value.get.return_value = self.order
         reference_model = SimpleNamespace(objects=Mock())
@@ -22,7 +23,10 @@ class TicketingTests(TestCase):
         pretix.Order = order_model
         local = ModuleType("pretix_gocardless.models")
         local.PaymentReference = reference_model
-        self.modules = patch.dict("sys.modules", {"pretix.base.models": pretix, "pretix_gocardless.models": local})
+        email = ModuleType("pretix.base.email")
+        email.get_email_context = Mock(return_value={})
+        self.modules = patch.dict("sys.modules", {"pretix.base.models": pretix, "pretix_gocardless.models": local,
+                                                  "pretix.base.email": email})
         self.modules.start()
         self.addCleanup(self.modules.stop)
         self.atomic = patch("pretix_gocardless.ticketing.transaction.atomic", side_effect=nullcontext)
@@ -33,6 +37,10 @@ class TicketingTests(TestCase):
         self.assertTrue(release_pending(1))
         self.assertTrue(self.order.valid_if_pending)
         self.assertEqual(self.payment.state, "pending")
+        self.order.send_mail.assert_called_once()
+        self.assertTrue(self.order.send_mail.call_args.kwargs["attach_tickets"])
+        self.assertFalse(release_pending(1))
+        self.order.send_mail.assert_called_once()
         self.assertTrue(revoke_pending(self.reference, self.payment))
         self.assertFalse(self.order.valid_if_pending)
 
@@ -47,6 +55,9 @@ class TicketingTests(TestCase):
             self.reference.last_status = change["last_status"]
             self.assertFalse(release_pending(1))
         self.reference.last_status = "submitted"
+        self.reference.remote_payment_id = None
+        self.assertFalse(release_pending(1))
+        self.reference.remote_payment_id = "PM123"
         self.order.require_approval = True
         self.assertFalse(release_pending(1))
         self.order.require_approval = False

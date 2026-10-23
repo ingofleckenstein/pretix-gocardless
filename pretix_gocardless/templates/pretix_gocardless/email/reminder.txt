@@ -1,0 +1,6 @@
+{{ message }}
+
+{{ event_name }} – {{ order_code }}
+{% if organizer_order_url %}
+[Bestellung im Backend öffnen]({{ organizer_order_url }})
+{% endif %}

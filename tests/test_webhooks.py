@@ -48,6 +48,26 @@ class WebhookDeliveryTests(TestCase):
         self.assertEqual(handle_delivery(body, signature, "test-secret", self.handler), 204)
         self.handler.assert_not_called()
 
+    def test_batched_checkout_progress_is_acknowledged_without_debit(self):
+        # A real sandbox delivery grouped these four progress events together.
+        events = [{"id": f"EV{index}", "resource_type": "billing_requests",
+                   "action": action, "links": {"billing_request": "BRQ123"}}
+                  for index, action in enumerate(
+                      ("created", "flow_created", "flow_visited", "collect_customer_details"), 1)]
+        body, signature = signed(events)
+        self.assertEqual(handle_delivery(body, signature, "test-secret", self.handler), 204)
+        self.handler.assert_not_called()
+
+    def test_progress_does_not_hide_a_failed_fulfilment(self):
+        events = [{"id": "EV1", "resource_type": "billing_requests", "action": "created",
+                   "links": {"billing_request": "BRQ123"}},
+                  {"id": "EV2", "resource_type": "billing_requests", "action": "fulfilled",
+                   "links": {"billing_request": "BRQ123"}}]
+        self.handler.side_effect = RuntimeError("retry required")
+        body, signature = signed(events)
+        self.assertEqual(handle_delivery(body, signature, "test-secret", self.handler), 503)
+        self.assertEqual(self.handler.call_count, 1)
+
     def test_payment_event_checks_account_before_reconciliation(self):
         ref = EventReference("EV123", "payments", "PM123")
         stored = SimpleNamespace(pk=5, environment="sandbox", mandate_id="MD123", creditor_id="CR123")
@@ -63,12 +83,33 @@ class WebhookDeliveryTests(TestCase):
                 patch("pretix_gocardless.reconcile.reconcile") as reconciler:
             process_reference(ref, "test-event", provider, "sandbox")
             client_factory.assert_called_once_with("test-token", "sandbox")
-            reconciler.assert_called_once_with(5, "EV123", "sandbox", {"id": "PM123"}, mandate_id="MD123", creditor_id="CR123")
+            args, kwargs = reconciler.call_args
+            self.assertEqual(args[:3], (5, "EV123", "sandbox"))
+            self.assertEqual(args[3](), {"id": "PM123"})
+            self.assertEqual(kwargs, {"mandate_id": "MD123", "creditor_id": "CR123"})
             client.mandate.return_value["links"]["creditor"] = "CR999"
             reconciler.reset_mock()
             with self.assertRaises(ValueError):
                 process_reference(ref, "test-event", provider, "sandbox")
             reconciler.assert_not_called()
+
+    def test_later_payment_event_can_trigger_early_release(self):
+        ref = EventReference("EV123", "payments", "PM123")
+        stored = SimpleNamespace(pk=5, environment="sandbox", mandate_id="MD123", creditor_id="CR123")
+        module = ModuleType("pretix_gocardless.models")
+        module.PaymentReference = SimpleNamespace(objects=Mock())
+        module.PaymentReference.objects.get.return_value = stored
+        client = Mock()
+        client.payment.return_value = {"id": "PM123"}
+        client.mandate.return_value = {"id": "MD123", "scheme": "sepa_core", "status": "active",
+                                       "links": {"creditor": "CR123"}}
+        provider = SimpleNamespace(settings={"sandbox_access_token": "token", "ticket_release": "pending"})
+        with patch.dict("sys.modules", {"pretix_gocardless.models": module}), \
+                patch("pretix_gocardless.client.Client", return_value=client), \
+                patch("pretix_gocardless.reconcile.reconcile", return_value="wait"), \
+                patch("pretix_gocardless.ticketing.release_pending") as release:
+            self.assertEqual(process_reference(ref, "test-event", provider, "sandbox"), "wait")
+            release.assert_called_once_with(5)
 
     def test_sandbox_signature_is_not_accepted_for_live(self):
         module = ModuleType("pretix_gocardless.payment")
@@ -110,11 +151,12 @@ class WebhookDeliveryTests(TestCase):
             self.assertEqual(webhook(request, "sandbox").status_code, 498)
             self.assertEqual(webhook(factory.get("/gocardless/webhook/"), "sandbox").status_code, 405)
 
-    def test_http_endpoint_does_not_acknowledge_unhandled_mandate(self):
+    def test_http_endpoint_acknowledges_handled_mandate(self):
         module = ModuleType("pretix_gocardless.payment")
         module.GoCardlessProvider = Mock(return_value=SimpleNamespace(settings={"sandbox_webhook_secret": "test-secret"}))
         body, signature = signed([{"id": "EV123", "resource_type": "mandates", "links": {"mandate": "MD123"}}])
         request = RequestFactory().post("/gocardless/webhook/", data=body, content_type="application/json", HTTP_WEBHOOK_SIGNATURE=signature)
         request.event = object()
-        with patch.dict("sys.modules", {"pretix_gocardless.payment": module}):
-            self.assertEqual(webhook(request, "sandbox").status_code, 503)
+        with patch.dict("sys.modules", {"pretix_gocardless.payment": module}), \
+                patch("pretix_gocardless.views.process_reference", return_value="mandate_cancelled"):
+            self.assertEqual(webhook(request, "sandbox").status_code, 204)

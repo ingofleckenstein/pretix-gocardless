@@ -10,7 +10,7 @@ def release_pending(reference_id):
         ref = PaymentReference.objects.select_for_update().get(pk=reference_id)
         payment = ref.payment
         order = Order.objects.select_for_update().get(pk=payment.order_id)
-        if (ref.last_status not in {"pending_submission", "submitted"}
+        if (not ref.remote_payment_id or ref.last_status not in {"pending_submission", "submitted"}
                 or payment.state not in {"created", "pending"} or order.status != Order.STATUS_PENDING
                 or order.require_approval or order.pending_sum > payment.amount):
             return False
@@ -21,6 +21,17 @@ def release_pending(reference_id):
         order.log_action("pretix.event.order.valid_if_pending.set", data={"provider": "gocardless"})
         ref.released_pending_tickets = True
         ref.save(update_fields=["released_pending_tickets"])
+        # Queue in the same transaction as the flag: pretix's outgoing-mail
+        # record rolls back on error and delivery starts after commit.
+        # Never use the paid-order template: the debit is not confirmed yet.
+        from django.utils.translation import gettext_lazy as _
+        from pretix.base.email import get_email_context
+        order.send_mail(
+            _("Deine Tickets sind bereit – die Lastschrift steht noch aus"),
+            "pretix_gocardless/email/early_ticket.txt",
+            get_email_context(event=order.event, order=order),
+            "pretix.event.order.email.sent", attach_tickets=True,
+        )
         return True
 
 

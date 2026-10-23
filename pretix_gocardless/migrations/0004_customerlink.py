@@ -20,4 +20,3 @@ class Migration(migrations.Migration):
                                          ("environment", "creditor_id", "remote_customer_id")}},
         ),
     ]
-

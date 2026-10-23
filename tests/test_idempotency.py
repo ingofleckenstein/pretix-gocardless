@@ -17,3 +17,15 @@ class IdempotencyKeyTests(TestCase):
         for seed, purpose in ((uuid4(), "other"), ("not-a-uuid", "debit-payment")):
             with self.subTest(seed=seed, purpose=purpose), self.assertRaises(ValueError):
                 operation_key(seed, purpose)
+
+    def test_hosted_flow_generation_preserves_old_key_and_separates_renewal(self):
+        seed = uuid4()
+        self.assertEqual(operation_key(seed, "hosted-flow"), operation_key(seed, "hosted-flow", 0))
+        self.assertNotEqual(operation_key(seed, "hosted-flow", 0), operation_key(seed, "hosted-flow", 1))
+        self.assertEqual(operation_key(seed, "hosted-flow", 1), operation_key(seed, "hosted-flow", 1))
+
+    def test_invalid_generation_is_rejected(self):
+        for purpose, generation in (("hosted-flow", -1), ("hosted-flow", True),
+                                    ("debit-payment", 1), ("hosted-flow", "1")):
+            with self.subTest(purpose=purpose, generation=generation), self.assertRaises(ValueError):
+                operation_key(uuid4(), purpose, generation)

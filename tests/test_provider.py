@@ -45,6 +45,27 @@ class ProviderTests(TestCase):
         available = patch("pretix_gocardless.creditors.available", return_value=[("CR123", "Test")])
         available.start()
         self.addCleanup(available.stop)
+        reuse = patch("pretix_gocardless.checkout.start_reused_mandate", return_value=False)
+        self.reuse = reuse.start()
+        self.addCleanup(reuse.stop)
+
+    def test_reused_mandate_returns_to_order_without_new_hosted_flow(self):
+        self.reuse.return_value = True
+        order = SimpleNamespace(code="ABC12", secret="secret", customer_id=123, tagged_secret=Mock(return_value="secret"))
+        payment = SimpleNamespace(pk=42, order=order, state="created", PAYMENT_STATE_PENDING="pending", save=Mock())
+        with patch("pretix_gocardless.checkout.start_authorisation") as hosted:
+            self.provider.execute_payment(self.request, payment)
+        hosted.assert_not_called()
+        self.assertEqual(payment.state, "pending")
+
+    def test_optional_chargeback_notice_is_escaped_in_both_checkout_steps(self):
+        self.event.provider_settings["chargeback_notice"] = 'Kosten <script>alert(1)</script>'
+        for rendered in (self.provider.payment_form_render(self.request, 20),
+                         self.provider.checkout_confirm_render(self.request)):
+            self.assertIn('Kosten &lt;script&gt;', rendered)
+            self.assertNotIn('<script>', rendered)
+        self.event.provider_settings["chargeback_notice"] = ""
+        self.assertEqual(self.provider.payment_form_render(self.request, 20), "")
 
     def test_only_complete_sandbox_configuration_is_selectable(self):
         self.assertTrue(self.provider.is_allowed(self.request, 1))
@@ -98,6 +119,7 @@ class ProviderTests(TestCase):
         self.event.provider_settings.update(sandbox_webhook_secret="", sandbox_without_webhook=True)
         self.event.testmode = False
         self.assertFalse(self.provider.is_allowed(self.request, 1))
+
         self.event.testmode = True
         self.assertTrue(self.provider.is_allowed(self.request, 1))
         self.assertTrue(self.provider.payment_is_valid_session(self.request))
@@ -111,6 +133,13 @@ class ProviderTests(TestCase):
         self.assertFalse(self.provider.is_allowed(self.request, 1))
         self.event.provider_settings["sandbox_without_webhook"] = True
         self.event.provider_settings["sandbox_access_token"] = ""
+        self.assertFalse(self.provider.is_allowed(self.request, 1))
+
+    def test_organizer_webhook_secret_allows_sandbox_setup(self):
+        self.event.provider_settings["sandbox_webhook_secret"] = ""
+        self.event.organizer = SimpleNamespace(settings={"gocardless_sandbox_webhook_secret": "organizer-secret"})
+        self.assertTrue(self.provider.is_allowed(self.request, 1))
+        self.event.organizer.settings["gocardless_sandbox_webhook_secret"] = ""
         self.assertFalse(self.provider.is_allowed(self.request, 1))
 
     def test_no_webhook_bypass_never_executes_a_non_test_order(self):
@@ -147,6 +176,21 @@ class ProviderTests(TestCase):
             self.assertIn("https://docs.gocardless.com/docs/getting-started/stay-up-to-date-with-webhooks",
                           str(fields[f"{env}_webhook_secret"].help_text))
 
+    def test_webhook_urls_are_readonly_and_environment_specific(self):
+        from pretix.multidomain.urlreverse import eventreverse_absolute
+        eventreverse_absolute.side_effect = lambda event, name, kwargs: (
+            f"https://tickets.example.org/event/gocardless/webhook/{kwargs['environment']}/"
+        )
+        fields = self.provider.settings_form_fields
+        for env in ("sandbox", "live"):
+            field = fields[f"{env}_webhook_url_display"]
+            self.assertTrue(field.disabled)
+            self.assertEqual(field.initial, f"https://tickets.example.org/event/gocardless/webhook/{env}/")
+            attrs = field.widget.get_context("url", field.initial, {"disabled": True})["widget"]["attrs"]
+            self.assertTrue(attrs["readonly"])
+            self.assertNotIn("disabled", attrs)
+            self.assertIn("GoCardless", str(fields[f"{env}_webhook_secret"].help_text))
+
     def test_single_uses_separate_readonly_display_and_multiple_use_selection(self):
         fields = self.provider.settings_form_fields
         self.assertEqual(fields["sandbox_creditor_display"].initial, "CR123")
@@ -156,4 +200,3 @@ class ProviderTests(TestCase):
             fields = self.provider.settings_form_fields
             self.assertIsInstance(fields["sandbox_creditor_id"], forms.ChoiceField)
             self.assertNotIn("sandbox_creditor_display", fields)
-

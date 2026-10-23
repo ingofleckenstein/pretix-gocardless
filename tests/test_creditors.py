@@ -36,4 +36,3 @@ class CreditorTests(TestCase):
             {"creditors": [{"id": "CR456", "name": "B"}], "meta": {"cursors": {"after": None}}},
         ]):
             self.assertEqual(client.creditors(), [("CR123", "A"), ("CR456", "B")])
-

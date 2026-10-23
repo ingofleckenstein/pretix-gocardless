@@ -49,4 +49,3 @@ def creditor_field(settings, environment):
                                  ], help_text=_("Choose the creditor for this event."))
     return CreditorDisplayField(label=label, required=False, disabled=True,
                            help_text=_("Save an API token to load the available creditors."))
-

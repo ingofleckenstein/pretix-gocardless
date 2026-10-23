@@ -1,17 +1,39 @@
 # pretix-gocardless
 
+## Project ownership and use
+
+Developed by Spotstone UG (haftungsbeschränkt). This revision is not offered
+under a public software license. Contact Spotstone UG to discuss purchasing a
+license to use the code. No license or usage rights are granted by this notice.
+
+Earlier published revisions of this repository carried an MIT license. Removing
+that license from later revisions does not revoke permissions already granted
+for those earlier revisions. Check the license attached to the specific revision
+you intend to use.
+
+## Portability
+
+The plugin contains no tenant-specific domain, organizer ID, customer
+account, or Keycloak dependency. It uses pretix's event and organizer settings
+for GoCardless credentials, creditor selection, webhooks, ticket handling and
+reminder addresses. The GoCardless API hosts are provider endpoints. Some
+default reminder text is in German and can be changed in the event settings.
+The current checkout is limited to EUR and the GoCardless sandbox; production
+payments remain disabled. Compatibility and deployment on other pretix
+installations have not been established by the existing tests.
+
 **Work in progress; experimental sandbox checkout only.** The provider can be
 selected with sandbox credentials in an EUR event. A hosted authorisation and
 simulated payment confirmation have been exercised in the GoCardless sandbox
 with a local pretix instance. It is not production-ready: do not
 install it on an operational pretix instance.
 
-The current code contains an API client, an experimental event-specific webhook
-endpoint and unit tests. Some webhook cases, chargebacks, refunds, configuration
-and full integration tests remain incomplete. The database models and migrations
-are drafts. Unresolved webhook cases are retried rather than acknowledged as
-successful. A real GoCardless webhook delivery to this endpoint has not yet been
-tested; do not rely on it for operational use.
+The current code contains an API client, event- and organizer-specific webhook
+endpoints and unit tests. Sandbox webhook delivery has been exercised against a
+public pretix installation. Adverse mandate states are stored and linked
+payments are reconciled from current API responses; mandate replacement,
+transfer, refund accounting and production integration remain incomplete. Do not rely on
+this experimental implementation for operational payments.
 
 The intended configuration offers either ticket release after a confirmed
 payment or early release while direct debit is pending. Early release is a
@@ -22,14 +44,16 @@ must not falsely record an uncollected payment as paid. Refunds are to be
 performed and confirmed manually; this plugin will not initiate refunds.
 
 GoCardless direct debit is available for guest and signed-in checkouts.
-The hosted GoCardless mandate may be reusable even though this plugin creates
-only one payment per order; the plugin does not yet reuse mandates across orders.
+The hosted mandate can permit multiple separate payments; it is not a subscription.
 
 For signed-in customers, the plugin stores a GoCardless customer ID against
 the pretix customer, scoped by creditor and environment. Later checkouts reuse
-that customer ID; they still request a new mandate and do not automatically
-reuse a previous mandate. This has been tested with two incomplete sandbox
-billing requests; concurrency and completed repeat checkouts need further tests.
+that customer ID. Code also attempts to reuse an eligible previously authorized
+mandate for a signed-in customer after verifying customer, creditor, bank account,
+environment and mandate state; otherwise a new hosted authorization is used.
+One repeat checkout with a synthetic signed-in customer was observed on an
+external sandbox installation. Broader repeat-checkout and concurrency scenarios
+still need end-to-end validation.
 
 The hosted Sandbox flow receives the order's billing address as editable
 prefill. If the order has no billing address, the sole saved customer profile
@@ -57,6 +81,16 @@ Sandbox and `gocardless/webhook/live/` for Live. A GoCardless webhook cannot
 reach a URL that exists only on localhost; an externally reachable HTTPS URL
 is required for end-to-end webhook testing. A change of the selected
 environment does not change the environment of existing payments.
+An experimental organizer settings page also displays organizer-scoped webhook
+URLs and accepts separate GoCardless-generated secrets. Only sandbox dispatch is
+implemented. Organizer routing retries unknown references (including unrelated
+account activity), since early webhooks can precede local persistence. Failed,
+cancelled, expired, consumed and blocked mandates are handled; replacement and
+transfer events are deliberately retried until atomic rebinding is implemented. This may cause repeated deliveries
+and is not yet suitable for an operational server. The event-specific settings
+and endpoint remain available for legacy sandbox testing. The organizer page
+also supports API tokens and creditor selection; when an organizer token is
+configured, it and its associated creditor are used instead of event credentials.
 
 The experimental `debit.py` component checks a fulfilled billing request and usable mandate,
 uses a stable debit-creation key, and validates an independently retrieved
@@ -114,13 +148,62 @@ source checkout, Dockerfile or version control. Once the integration is ready,
 follow the deployment's normal migration and restart procedure.
 
 `status.py` contains experimental decision logic for current remote statuses.
-`reconcile.py` is a draft transactional service called by the experimental endpoint:
-it stores event IDs under a row lock and can call pretix confirmation/failure
-methods. It requires creditor-account binding and integration tests. It refuses
-to process chargebacks or ambiguous states pending a reviewed implementation.
-The tests cover mocked reconciliation and SQLite transactions using small test
-models. They are not pretix integration, PostgreSQL concurrency, hosted-flow,
-or GoCardless sandbox tests.
+`reconcile.py` stores event IDs under a row lock and calls pretix
+confirmation/failure methods. A chargeback or late failure after confirmation
+creates a manual-review log and a configurable organizer notification, and is
+acknowledged once recorded; it does **not** reverse the payment, reopen the
+order, invalidate tickets or perform accounting. Organizers must monitor and
+manually resolve these cases. Ambiguous states are retried. The new notification
+and review workflow still require end-to-end testing, including email delivery.
+Migration 0006 persists `manual_review_required` independently of the last API
+snapshot, and preserves existing incidents where a confirmed payment's stored
+status indicates a reversal. Later events cannot silently clear that flag or
+replace the recorded adverse status. No accounting reversal is implied. Resolve
+the financial and ticket consequences before an operator explicitly clears the
+flag; there is deliberately no automatic reset.
+
+Migration 0007 persists the Billing Request Flow identifier, without storing
+its token-bearing authorisation URL. Retrying an interrupted checkout fetches
+and validates that same flow while it is unexpired. An expired flow advances a
+stored generation and receives a new purpose-separated idempotency key, so
+concurrent retries converge on one replacement. Flows created by older plugin
+versions cannot be recovered because their identifiers were never stored.
+
+Migration 0008 stores mandate status separately from payment status. Adverse
+mandate events are scoped to the organizer, environment and creditor and are
+deduplicated transactionally. Every linked payment is fetched and reconciled
+independently; cancellation of a mandate therefore cannot by itself reverse a
+confirmed payment. A pending local payment with no remote debit is failed when
+its mandate becomes unusable. Organizer and customer order views show that a
+new mandate is required. Replaced and transferred mandates remain fail-closed.
+
+The unit suite covers mocked reconciliation and SQLite transactions using small
+test models. `integration/run.py` additionally checks real pretix 2026.8 models
+on a disposable PostgreSQL cluster, including simultaneous event replay. It
+does not contact GoCardless or prove SMTP delivery, downloadable ticket content,
+check-in behavior on a device, or compatibility with an operational deployment.
+
+### Interrupted checkout and ticket release (sandbox development)
+
+The provider settings offer an optional incomplete-authorisation reminder after
+at least one hour. pretix's `runperiodic` must run regularly. The plugin checks
+GoCardless before queuing mail and records separate customer/organizer deliveries;
+the organizer copy is sent only when its address is configured. Both texts can
+be edited per event. Mail queueing is not proof of delivery. Failed remote
+lookups are retried on a later run. The customer order page offers a continuation
+action only when the original billing request is still eligible.
+
+Early ticket release is an explicit event-level setting: the order remains
+unpaid but becomes valid for check-in after the debit has been requested. The
+plugin revokes validity it granted if the debit fails before confirmation. Late
+reversals require manual review. The email asks pretix to attach tickets, subject
+to the event's ticket and mail settings. Verify this whole workflow with sandbox
+orders before relying on it. This version does not support live payments.
+
+Hosted flow URLs can expire; renewal of an expired flow has not yet been
+verified. In that case do not initiate a duplicate payment: contact the
+organizer. Webhooks, customer mail, periodic tasks, early ticket delivery and
+failed-payment behavior require end-to-end testing on the target installation.
 
 Documentation references:
 
@@ -130,4 +213,3 @@ Documentation references:
 - https://docs.gocardless.com/docs/api-reference/webhooks
 - https://docs.gocardless.com/docs/api-reference/payment
 - https://docs.gocardless.com/docs/collect-payments/one-off-payments/one-off-direct-debit
-

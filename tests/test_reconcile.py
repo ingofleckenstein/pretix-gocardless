@@ -11,12 +11,12 @@ class ReconcileTests(TestCase):
     def setUp(self):
         self.payment = SimpleNamespace(
             provider="gocardless", amount=Decimal("12.34"), state="pending",
-            order=SimpleNamespace(event=SimpleNamespace(currency="EUR")),
+            local_id=1, order=SimpleNamespace(event=SimpleNamespace(currency="EUR"), log_action=MagicMock()),
             confirm=MagicMock(), fail=MagicMock(),
         )
         self.ref = SimpleNamespace(
             pk=1, payment_id=7, environment="sandbox", remote_payment_id="PM123",
-            reversal_recorded=False, released_pending_tickets=False, save=MagicMock(),
+            reversal_recorded=False, released_pending_tickets=False, last_status="confirmed", save=MagicMock(),
         )
         self.events = MagicMock()
         self.events.objects.filter.return_value.first.return_value = None
@@ -60,10 +60,17 @@ class ReconcileTests(TestCase):
             self.run_service()
         self.events.objects.create.assert_not_called()
 
-    def test_chargeback_is_not_silently_acknowledged(self):
+    def test_chargeback_logs_manual_review_without_changing_confirmed_payment(self):
         self.payment.state = "confirmed"
         self.remote["status"] = "charged_back"
-        with self.assertRaises(RequiresManualReview):
-            self.run_service()
-        self.events.objects.create.assert_not_called()
+        self.assertEqual(self.run_service(), "reverse")
+        self.payment.order.log_action.assert_called_once()
+        self.events.objects.create.assert_called_once()
         self.payment.fail.assert_not_called()
+
+    def test_repeated_chargeback_does_not_log_twice(self):
+        self.payment.state = "confirmed"
+        self.ref.last_status = "charged_back"
+        self.remote["status"] = "charged_back"
+        self.assertEqual(self.run_service(), "reverse")
+        self.payment.order.log_action.assert_not_called()
