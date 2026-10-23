@@ -1,5 +1,27 @@
 # pretix-gocardless
 
+## Project ownership and use
+
+Developed by Spotstone UG (haftungsbeschränkt). This revision is not offered
+under a public software license. Contact Spotstone UG to discuss purchasing a
+license to use the code. No license or usage rights are granted by this notice.
+
+Earlier published revisions of this repository carried an MIT license. Removing
+that license from later revisions does not revoke permissions already granted
+for those earlier revisions. Check the license attached to the specific revision
+you intend to use.
+
+## Portability
+
+The plugin contains no Selbstsein-specific domain, organizer ID, customer
+account, or Keycloak dependency. It uses pretix's event and organizer settings
+for GoCardless credentials, creditor selection, webhooks, ticket handling and
+reminder addresses. The GoCardless API hosts are provider endpoints. Some
+default reminder text is in German and can be changed in the event settings.
+The current checkout is limited to EUR and the GoCardless sandbox; production
+payments remain disabled. Compatibility and deployment on other pretix
+installations have not been established by the existing tests.
+
 **Work in progress; experimental sandbox checkout only.** The provider can be
 selected with sandbox credentials in an EUR event. A hosted authorisation and
 simulated payment confirmation have been exercised in the GoCardless sandbox
